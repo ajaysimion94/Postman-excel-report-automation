@@ -71,29 +71,88 @@ public final class PostmanCollectionParser {
         }
 
         String raw = urlNode.path("raw").asText();
+        String base;
         if (!raw.isBlank()) {
-            return raw;
-        }
-
-        if (urlNode.has("host")) {
+            base = raw;
+        } else if (urlNode.has("host")) {
             String protocol = urlNode.path("protocol").asText("https");
             String host = joinTextArray(urlNode.path("host"), ".");
             String path = joinTextArray(urlNode.path("path"), "/");
-            if (path.isBlank()) {
-                return protocol + "://" + host;
-            }
-            return protocol + "://" + host + "/" + path;
+            base = path.isBlank() ? protocol + "://" + host : protocol + "://" + host + "/" + path;
+        } else {
+            base = "";
         }
 
-        return "";
+        // Append any query params from the structured query array that are not already in the raw URL
+        JsonNode queryArray = urlNode.path("query");
+        if (queryArray.isArray()) {
+            List<String> params = new ArrayList<>();
+            for (JsonNode q : queryArray) {
+                if (q.path("disabled").asBoolean(false)) {
+                    continue;
+                }
+                String key   = q.path("key").asText("");
+                String value = q.path("value").asText("");
+                if (!key.isBlank()) {
+                    String pair = key + "=" + value;
+                    // Only append if not already present in the raw string
+                    if (!base.contains(key + "=")) {
+                        params.add(pair);
+                    }
+                }
+            }
+            if (!params.isEmpty()) {
+                String separator = base.contains("?") ? "&" : "?";
+                base = base + separator + String.join("&", params);
+            }
+        }
+
+        return base;
     }
 
     private String parseBody(JsonNode bodyNode) {
         String mode = bodyNode.path("mode").asText();
-        if ("raw".equalsIgnoreCase(mode)) {
-            return bodyNode.path("raw").asText(null);
+        switch (mode.toLowerCase()) {
+            case "raw" -> {
+                return bodyNode.path("raw").asText(null);
+            }
+            case "urlencoded" -> {
+                JsonNode fields = bodyNode.path("urlencoded");
+                if (!fields.isArray()) return null;
+                List<String> pairs = new ArrayList<>();
+                for (JsonNode field : fields) {
+                    if (field.path("disabled").asBoolean(false)) continue;
+                    String key   = field.path("key").asText("");
+                    String value = field.path("value").asText("");
+                    if (!key.isBlank()) {
+                        pairs.add(java.net.URLEncoder.encode(key,   java.nio.charset.StandardCharsets.UTF_8)
+                                + "=" +
+                                java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8));
+                    }
+                }
+                return pairs.isEmpty() ? null : String.join("&", pairs);
+            }
+            case "formdata" -> {
+                // Multipart formdata: build a simple JSON representation so data is not silently lost.
+                // True multipart/form-data sending is not supported; this preserves the field values.
+                JsonNode fields = bodyNode.path("formdata");
+                if (!fields.isArray()) return null;
+                List<String> parts = new ArrayList<>();
+                for (JsonNode field : fields) {
+                    if (field.path("disabled").asBoolean(false)) continue;
+                    String key   = field.path("key").asText("");
+                    String value = field.path("value").asText("");
+                    if (!key.isBlank()) {
+                        parts.add("\"" + key + "\": \"" + value + "\"");
+                    }
+                }
+                if (parts.isEmpty()) return null;
+                System.err.println("[WARN] Request body mode is 'formdata'. Multipart sending is not supported; "
+                        + "fields are included as JSON for visibility.");
+                return "{" + String.join(", ", parts) + "}";
+            }
+            default -> { return null; }
         }
-        return null;
     }
 
     private List<RequestHeader> parseHeaders(JsonNode headersNode) {

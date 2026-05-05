@@ -54,7 +54,8 @@ public final class RequestExecutor {
     private static HttpClient buildHttpClient(Map<String, String> variables) {
         int connectTimeout = parseIntVar(variables, "REQUEST_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS);
         HttpClient.Builder builder = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(connectTimeout));
+                .connectTimeout(Duration.ofSeconds(connectTimeout))
+                .cookieHandler(new java.net.CookieManager(null, java.net.CookiePolicy.ACCEPT_ALL));
 
         String disableSsl         = variables.getOrDefault("DISABLE_SSL_VERIFY", "false").trim();
         String trustStorePath     = variables.get("SSL_TRUST_STORE");
