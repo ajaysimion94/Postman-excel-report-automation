@@ -50,6 +50,32 @@ Execution flow:
 - no `--filter`:
   - if exactly one filter exists, it is auto-selected
   - if multiple filters exist, run fails and asks for explicit `--filter`
+- non-interactive daily mode:
+   - keep defaults in `.env`
+   - keep one filter in `FILTERS_DIR`
+   - run with one command: `java -jar target/postman-excel-runner-1.0.0.jar --env .env`
+
+## Build
+
+Preferred (Maven Wrapper):
+
+```bash
+./mvnw clean package
+./mvnw clean package -DskipTests
+```
+
+If Maven is installed globally:
+
+```bash
+mvn clean package
+mvn clean package -DskipTests
+```
+
+Build output:
+
+```text
+target/postman-excel-runner-1.0.0.jar
+```
 
 ## Testing
 

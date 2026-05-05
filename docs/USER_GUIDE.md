@@ -4,41 +4,78 @@ This is the primary day-to-day guide (setup, run commands, filters, and troubles
 
 ## Quick Daily Commands
 
+Default daily mode is non-interactive: configure once in `.env` and run a single command.
+
 ### 1) List collections
 
 ```bash
-java -jar target/postman-excel-runner-1.0.0.jar--env .env --list
+java -jar target/postman-excel-runner-1.0.0.jar --env .env --list
 ```
 
 ### 2) List filters
 
 ```bash
-java -jar target/postman-excel-runner-1.0.0.jar--env .env --list-filters
+java -jar target/postman-excel-runner-1.0.0.jar --env .env --list-filters
 ```
 
 ### 3) Run with a selected filter (most common)
 
 ```bash
-java -jar target/postman-excel-runner-1.0.0.jar\
+java -jar target/postman-excel-runner-1.0.0.jar \
   --env .env \
   --filter posts-only
 ```
 
-### 4) Run with auto-selected default filter
+### 4) Run with one command (recommended daily flow)
 
-When `FILTERS_DIR` contains exactly one valid `.json` filter, you can run:
+If `FILTERS_DIR` has exactly one valid filter, the app auto-selects it.
 
 ```bash
-java -jar target/postman-excel-runner-1.0.0.jar--env .env
+java -jar target/postman-excel-runner-1.0.0.jar --env .env
 ```
 
 ### 5) Include response body preview cells
 
 ```bash
-java -jar target/postman-excel-runner-1.0.0.jar\
+java -jar target/postman-excel-runner-1.0.0.jar \
   --env .env \
   --filter posts-only \
   --include-body
+```
+
+### When it asks for explicit input (only when necessary)
+
+- Multiple filters in `FILTERS_DIR`: pass `--filter <name>`
+- No collection resolvable from CLI/filter: pass `--collection-name <name>` or `--collection <path>`
+- Missing env values (timeouts/auth/paths): set them in `.env`
+
+---
+
+## Build with Maven
+
+Use Maven Wrapper (recommended, no global Maven required):
+
+```bash
+./mvnw clean package
+```
+
+Fast local build without running tests:
+
+```bash
+./mvnw clean package -DskipTests
+```
+
+If Maven is installed globally, equivalent commands are:
+
+```bash
+mvn clean package
+mvn clean package -DskipTests
+```
+
+The runnable shaded JAR is produced at:
+
+```text
+target/postman-excel-runner-1.0.0.jar
 ```
 
 ---
@@ -58,7 +95,7 @@ Automation/
 ├── filters/
 ├── reports/
 ├── .env
-└── target/postman-excel-runner-1.0.0-SNAPSHOT.jar
+└── target/postman-excel-runner-1.0.0.jar
 ```
 
 ### 3. Configure `.env`

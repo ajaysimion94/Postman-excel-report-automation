@@ -9,10 +9,16 @@ import com.automation.postman.RequestHeader;
 import com.automation.postman.RequestSpec;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.security.KeyStore;
+import java.security.SecureRandom;
+import java.security.cert.X509Certificate;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -20,6 +26,10 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.TrustManagerFactory;
+import javax.net.ssl.X509TrustManager;
 
 public final class RequestExecutor {
     /** Default per-request read timeout in seconds (overridable via REQUEST_TIMEOUT_SECONDS in .env). */
@@ -33,8 +43,75 @@ public final class RequestExecutor {
         this(HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(DEFAULT_TIMEOUT_SECONDS)).build());
     }
 
+    public RequestExecutor(Map<String, String> variables) {
+        this(buildHttpClient(variables));
+    }
+
     RequestExecutor(HttpClient httpClient) {
         this.httpClient = httpClient;
+    }
+
+    private static HttpClient buildHttpClient(Map<String, String> variables) {
+        int connectTimeout = parseIntVar(variables, "REQUEST_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS);
+        HttpClient.Builder builder = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(connectTimeout));
+
+        String disableSsl         = variables.getOrDefault("DISABLE_SSL_VERIFY", "false").trim();
+        String trustStorePath     = variables.get("SSL_TRUST_STORE");
+        String trustStorePassword = variables.getOrDefault("SSL_TRUST_STORE_PASSWORD", "changeit");
+
+        if ("true".equalsIgnoreCase(disableSsl)) {
+            System.err.println("[WARN] DISABLE_SSL_VERIFY=true — SSL certificate validation is disabled. "
+                    + "Do NOT use this in production against real APIs.");
+            builder.sslContext(buildTrustAllSslContext());
+        } else if (trustStorePath != null && !trustStorePath.isBlank()) {
+            builder.sslContext(buildCustomTrustStoreSslContext(trustStorePath, trustStorePassword));
+        }
+
+        return builder.build();
+    }
+
+    private static SSLContext buildTrustAllSslContext() {
+        try {
+            TrustManager[] trustAll = new TrustManager[]{
+                new X509TrustManager() {
+                    public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
+                    public void checkClientTrusted(X509Certificate[] chain, String authType) {}
+                    public void checkServerTrusted(X509Certificate[] chain, String authType) {}
+                }
+            };
+            SSLContext ctx = SSLContext.getInstance("TLS");
+            ctx.init(null, trustAll, new SecureRandom());
+            return ctx;
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to create trust-all SSL context: " + e.getMessage(), e);
+        }
+    }
+
+    private static SSLContext buildCustomTrustStoreSslContext(String trustStorePath, String password) {
+        Path path = Path.of(trustStorePath);
+        if (!Files.exists(path)) {
+            throw new IllegalArgumentException(
+                    "SSL_TRUST_STORE file not found: " + path.toAbsolutePath()
+                    + ". Fix the path in .env or remove SSL_TRUST_STORE to use the default JVM truststore.");
+        }
+        try (InputStream is = Files.newInputStream(path)) {
+            String type = trustStorePath.toLowerCase().endsWith(".p12")
+                    || trustStorePath.toLowerCase().endsWith(".pfx") ? "PKCS12" : "JKS";
+            KeyStore keyStore = KeyStore.getInstance(type);
+            keyStore.load(is, password.toCharArray());
+            TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+            tmf.init(keyStore);
+            SSLContext ctx = SSLContext.getInstance("TLS");
+            ctx.init(null, tmf.getTrustManagers(), null);
+            System.out.println("SSL: using custom trust store: " + path.toAbsolutePath());
+            return ctx;
+        } catch (IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalStateException(
+                    "Failed to load SSL_TRUST_STORE from " + path.toAbsolutePath() + ": " + e.getMessage(), e);
+        }
     }
 
     public List<ExecutionResult> execute(PostmanCollection collection, RuntimeConfig config) {

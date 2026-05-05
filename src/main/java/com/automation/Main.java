@@ -41,7 +41,7 @@ public final class Main {
             System.out.println(mode + " filter: " + loadedFilter.path().getFileName());
         }
 
-        List<ExecutionResult> results = new RequestExecutor().execute(collection, config);
+        List<ExecutionResult> results = new RequestExecutor(config.variables()).execute(collection, config);
         Path outputPath = new ExcelReportGenerator().generate(collection, results, config);
         System.out.println("Excel report written to: " + outputPath.toAbsolutePath());
     }
