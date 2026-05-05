@@ -1,0 +1,9 @@
+{
+  "collection": "jsonplaceholder",
+  "requests": ["List all posts", "Get post by ID"],
+  "responseColumns": {
+    "*":             ["id", "title", "userId"],
+    "Get post by ID": ["id", "title", "body", "userId"]
+  },
+  "outputPrefix": "posts-focus"
+}

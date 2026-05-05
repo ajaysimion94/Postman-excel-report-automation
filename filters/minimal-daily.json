@@ -1,0 +1,8 @@
+{
+  "collection": "jsonplaceholder",
+  "requests": ["Get post by ID"],
+  "responseColumns": {
+    "*": ["id", "title", "body", "userId"]
+  },
+  "outputPrefix": "daily"
+}

@@ -1,0 +1,14 @@
+{
+  "collection": "reqres",
+  "requests": ["List all users", "Get user by ID"],
+  "outputPrefix": "reqres-auth",
+  "auth": {
+    "API_KEY": "override-api-key",
+    "APIKEY_HEADER": "X-API-Key",
+    "BEARER_TOKEN": "override-bearer-token"
+  },
+  "vars": {
+    "TEAM": "smoke",
+    "ENV_NAME": "staging"
+  }
+}
