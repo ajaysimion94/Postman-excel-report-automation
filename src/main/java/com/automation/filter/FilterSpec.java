@@ -4,17 +4,67 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Defines which requests to run and which response columns to include in the report.
+ * Defines which requests to run, which response columns to include, row-level conditions,
+ * date parsing hints, and custom table definitions.
  *
  * <pre>
  * {
- *   "collection":      "jsonplaceholder",         // optional: match this collection name (stem)
- *   "requests":        ["List all posts", "..."],  // optional: whitelist of request names
- *   "responseColumns": {                           // optional: per-request column whitelists
- *     "*":               ["id", "title"],          //   "*" = default for unspecified requests
- *     "Get post by ID":  ["id", "title", "body"]
+ *   // ── existing fields ──────────────────────────────────────────────────────────
+ *   "collection":      "jsonplaceholder",
+ *   "requests":        ["List all posts"],
+ *   "responseColumns": { "*": ["id", "title"] },
+ *   "outputPrefix":    "daily",
+ *
+ *   // ── row-level filters (new) ───────────────────────────────────────────────────
+ *   // Per-request or wildcard "*" row conditions applied to the Response Data sheet.
+ *   "rowFilters": {
+ *     "*": {
+ *       "logic": "AND",
+ *       "rules": [{ "field": "enabled", "op": "EQ", "value": "true" }]
+ *     },
+ *     "List all posts": {
+ *       "logic": "AND",
+ *       "rules": [{ "field": "modifiedDate", "op": "DATE_PRESET", "value": "YESTERDAY" }]
+ *     }
  *   },
- *   "outputPrefix":    "posts-focus"               // optional: prepended to the output filename
+ *
+ *   // ── date parsing config (new) ─────────────────────────────────────────────────
+ *   // Tells the evaluator how to parse date strings for DATE_PRESET / DATE_RANGE rules.
+ *   // Outer key: request name or "*" (wildcard). Inner key: field name.
+ *   "dateConfig": {
+ *     "*": {
+ *       "modifiedDate": { "format": "yyyy-MM-dd'T'HH:mm:ss'Z'", "timezone": "UTC" }
+ *     },
+ *     "List all posts": {
+ *       "createdAt": { "format": "dd/MM/yyyy", "timezone": "Asia/Kolkata" }
+ *     }
+ *   },
+ *
+ *   // ── custom table definitions (new) ────────────────────────────────────────────
+ *   // Each entry produces a new sheet sourced from one or more request responses.
+ *   "customTables": [
+ *     {
+ *       "name":          "Yesterday Active Posts",
+ *       "sourceRequest": "List all posts",
+ *       "columns":       ["id", "title", "modifiedDate"],
+ *       "where": { "logic": "AND", "rules": [
+ *         { "field": "enabled",      "op": "EQ",         "value": "true"      },
+ *         { "field": "modifiedDate", "op": "DATE_PRESET", "value": "YESTERDAY" }
+ *       ]}
+ *     },
+ *     {
+ *       "name":    "Posts with User Names",
+ *       "sources": [
+ *         { "request": "List all posts", "as": "p" },
+ *         { "request": "List users",     "as": "u" }
+ *       ],
+ *       "joinOn":  [{ "leftField": "userId", "rightField": "id" }],
+ *       "columns": ["p.id", "p.title", "u.name"],
+ *       "where": { "logic": "AND", "rules": [
+ *         { "field": "p.enabled", "op": "EQ", "value": "true" }
+ *       ]}
+ *     }
+ *   ]
  * }
  * </pre>
  */
@@ -24,5 +74,25 @@ public record FilterSpec(
         Map<String, List<String>> responseColumns,
         String outputPrefix,
         FilterAuthSpec auth,
-        Map<String, String> vars
+        Map<String, String> vars,
+
+        /**
+         * Per-request row-level filter conditions applied to the Response Data sheet.
+         * Key: request name or {@code "*"} wildcard.
+         * Request-specific rules take priority over the wildcard.
+         */
+        Map<String, RowFilterGroup> rowFilters,
+
+        /**
+         * Date parsing hints, scoped per request and per field.
+         * Outer key: request name or {@code "*"} wildcard.
+         * Inner key: field name in the response JSON.
+         */
+        Map<String, Map<String, DateFieldConfig>> dateConfig,
+
+        /**
+         * Custom table definitions. Each entry generates a dedicated sheet with filtered,
+         * joined, and projected rows derived from one or more request responses.
+         */
+        List<CustomTableSpec> customTables
 ) {}

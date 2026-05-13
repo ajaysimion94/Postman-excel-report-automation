@@ -20,10 +20,7 @@ class FilterValidatorTest {
         FilterSpec filter = new FilterSpec(
                 null,
                 List.of("Unknown request"),
-                null,
-                null,
-                null,
-                null);
+                null, null, null, null, null, null, null);
 
         assertThrows(IllegalArgumentException.class,
                 () -> FilterValidator.validate(filter, collection, Path.of("demo.json")));
@@ -33,12 +30,9 @@ class FilterValidatorTest {
     void rejectsInvalidResponseColumnsKeys() {
         PostmanCollection collection = sampleCollection();
         FilterSpec filter = new FilterSpec(
-                null,
-                null,
+                null, null,
                 Map.of("Does not exist", List.of("id")),
-                null,
-                null,
-                null);
+                null, null, null, null, null, null);
 
         assertThrows(IllegalArgumentException.class,
                 () -> FilterValidator.validate(filter, collection, Path.of("demo.json")));
@@ -48,12 +42,9 @@ class FilterValidatorTest {
     void rejectsPartialApiKeyAuth() {
         PostmanCollection collection = sampleCollection();
         FilterSpec filter = new FilterSpec(
-                null,
-                null,
-                null,
-                null,
+                null, null, null, null,
                 new FilterAuthSpec(null, null, null, "secret", null),
-                null);
+                null, null, null, null);
 
         assertThrows(IllegalArgumentException.class,
                 () -> FilterValidator.validate(filter, collection, Path.of("demo.json")));
@@ -68,8 +59,168 @@ class FilterValidatorTest {
                 Map.of("*", List.of("id", "name")),
                 "daily",
                 new FilterAuthSpec("u", "p", null, null, null),
-                Map.of("TEAM", "qa"));
+                Map.of("TEAM", "qa"),
+                null, null, null);
 
+        assertDoesNotThrow(() -> FilterValidator.validate(filter, collection, Path.of("demo.json")));
+    }
+
+    // ── rowFilters validation ──────────────────────────────────────────────────────
+
+    @Test
+    void rejectsUnknownRowFilterKeys() {
+        PostmanCollection collection = sampleCollection();
+        RowFilterGroup group = new RowFilterGroup("AND",
+                List.of(new RowFilterRule("id", "EQ", "1", null, null)));
+        FilterSpec filter = new FilterSpec(
+                null, null, null, null, null, null,
+                Map.of("Unknown request", group),
+                null, null);
+        assertThrows(IllegalArgumentException.class,
+                () -> FilterValidator.validate(filter, collection, Path.of("demo.json")));
+    }
+
+    @Test
+    void rejectsInvalidRowFilterOperator() {
+        PostmanCollection collection = sampleCollection();
+        RowFilterGroup group = new RowFilterGroup("AND",
+                List.of(new RowFilterRule("id", "BOGUS_OP", "1", null, null)));
+        FilterSpec filter = new FilterSpec(
+                null, null, null, null, null, null,
+                Map.of("*", group),
+                null, null);
+        assertThrows(IllegalArgumentException.class,
+                () -> FilterValidator.validate(filter, collection, Path.of("demo.json")));
+    }
+
+    @Test
+    void rejectsUnknownDatePreset() {
+        PostmanCollection collection = sampleCollection();
+        RowFilterGroup group = new RowFilterGroup("AND",
+                List.of(new RowFilterRule("ts", "DATE_PRESET", "UNKNOWN_PRESET", null, null)));
+        FilterSpec filter = new FilterSpec(
+                null, null, null, null, null, null,
+                Map.of("*", group),
+                null, null);
+        assertThrows(IllegalArgumentException.class,
+                () -> FilterValidator.validate(filter, collection, Path.of("demo.json")));
+    }
+
+    @Test
+    void rejectsDateRangeWithoutFromAndTo() {
+        PostmanCollection collection = sampleCollection();
+        RowFilterGroup group = new RowFilterGroup("AND",
+                List.of(new RowFilterRule("ts", "DATE_RANGE", null, null, null)));
+        FilterSpec filter = new FilterSpec(
+                null, null, null, null, null, null,
+                Map.of("*", group),
+                null, null);
+        assertThrows(IllegalArgumentException.class,
+                () -> FilterValidator.validate(filter, collection, Path.of("demo.json")));
+    }
+
+    // ── dateConfig validation ──────────────────────────────────────────────────────
+
+    @Test
+    void rejectsInvalidDateConfigFormatPattern() {
+        PostmanCollection collection = sampleCollection();
+        FilterSpec filter = new FilterSpec(
+                null, null, null, null, null, null,
+                null,
+                Map.of("*", Map.of("ts", new DateFieldConfig("!!!invalid-pattern!!!", null))),
+                null);
+        assertThrows(IllegalArgumentException.class,
+                () -> FilterValidator.validate(filter, collection, Path.of("demo.json")));
+    }
+
+    @Test
+    void rejectsInvalidTimezone() {
+        PostmanCollection collection = sampleCollection();
+        FilterSpec filter = new FilterSpec(
+                null, null, null, null, null, null,
+                null,
+                Map.of("*", Map.of("ts", new DateFieldConfig(null, "Mars/Phobos"))),
+                null);
+        assertThrows(IllegalArgumentException.class,
+                () -> FilterValidator.validate(filter, collection, Path.of("demo.json")));
+    }
+
+    // ── customTables validation ────────────────────────────────────────────────────
+
+    @Test
+    void rejectsCustomTableMissingSource() {
+        PostmanCollection collection = sampleCollection();
+        CustomTableSpec table = new CustomTableSpec("MyTable", null, null, null, null, null);
+        FilterSpec filter = new FilterSpec(
+                null, null, null, null, null, null,
+                null, null,
+                List.of(table));
+        assertThrows(IllegalArgumentException.class,
+                () -> FilterValidator.validate(filter, collection, Path.of("demo.json")));
+    }
+
+    @Test
+    void rejectsCustomTableWithBothSourceTypes() {
+        PostmanCollection collection = sampleCollection();
+        CustomTableSpec table = new CustomTableSpec(
+                "MyTable",
+                "List users",
+                List.of(new CustomTableJoinSource("List users", "u")),
+                null, null, null);
+        FilterSpec filter = new FilterSpec(
+                null, null, null, null, null, null,
+                null, null,
+                List.of(table));
+        assertThrows(IllegalArgumentException.class,
+                () -> FilterValidator.validate(filter, collection, Path.of("demo.json")));
+    }
+
+    @Test
+    void rejectsDuplicateCustomTableNames() {
+        PostmanCollection collection = sampleCollection();
+        CustomTableSpec t1 = new CustomTableSpec("Same", "List users", null, null, null, null);
+        CustomTableSpec t2 = new CustomTableSpec("Same", "List users", null, null, null, null);
+        FilterSpec filter = new FilterSpec(
+                null, null, null, null, null, null,
+                null, null,
+                List.of(t1, t2));
+        assertThrows(IllegalArgumentException.class,
+                () -> FilterValidator.validate(filter, collection, Path.of("demo.json")));
+    }
+
+    @Test
+    void rejectsMultiSourceWithoutJoinOn() {
+        PostmanCollection collection = sampleCollectionWithTwo();
+        CustomTableSpec table = new CustomTableSpec(
+                "JoinTable",
+                null,
+                List.of(new CustomTableJoinSource("List users", "u"),
+                        new CustomTableJoinSource("Get user", "g")),
+                null, null, null);
+        FilterSpec filter = new FilterSpec(
+                null, null, null, null, null, null,
+                null, null,
+                List.of(table));
+        assertThrows(IllegalArgumentException.class,
+                () -> FilterValidator.validate(filter, collection, Path.of("demo.json")));
+    }
+
+    @Test
+    void acceptsValidFilterWithAllNewFields() {
+        PostmanCollection collection = sampleCollection();
+        RowFilterGroup group = new RowFilterGroup("AND",
+                List.of(new RowFilterRule("id", "GT", "0", null, null)));
+        CustomTableSpec table = new CustomTableSpec(
+                "Active Users", "List users",
+                null, null,
+                List.of("id", "name"),
+                new RowFilterGroup("AND", List.of(
+                        new RowFilterRule("active", "IS_TRUE", null, null, null))));
+        FilterSpec filter = new FilterSpec(
+                null, null, null, null, null, null,
+                Map.of("*", group),
+                Map.of("*", Map.of("createdAt", new DateFieldConfig("yyyy-MM-dd", "UTC"))),
+                List.of(table));
         assertDoesNotThrow(() -> FilterValidator.validate(filter, collection, Path.of("demo.json")));
     }
 
@@ -83,5 +234,17 @@ class FilterValidatorTest {
                 null,
                 new AuthDefinition("noauth", Map.of()));
         return new PostmanCollection("Demo", Map.of(), List.of(request));
+    }
+
+    private static PostmanCollection sampleCollectionWithTwo() {
+        RequestSpec r1 = new RequestSpec(
+                "Users", "List users", "GET",
+                "https://example.com/users", List.of(), null,
+                new AuthDefinition("noauth", Map.of()));
+        RequestSpec r2 = new RequestSpec(
+                "Users", "Get user", "GET",
+                "https://example.com/users/1", List.of(), null,
+                new AuthDefinition("noauth", Map.of()));
+        return new PostmanCollection("Demo", Map.of(), List.of(r1, r2));
     }
 }

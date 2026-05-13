@@ -235,16 +235,18 @@ public final class RequestExecutor {
     }
 
     private String resolveAuthValue(AuthDefinition auth, Map<String, String> variables, String authKey, String... fallbackKeys) {
-        String directValue = auth.values().get(authKey);
-        if (directValue != null && !directValue.isBlank()) {
-            return VariableResolver.resolve(directValue, variables);
-        }
-
+        // .env / filter variables always win over hardcoded collection values
         for (String fallbackKey : fallbackKeys) {
             String value = variables.get(fallbackKey);
             if (value != null && !value.isBlank()) {
                 return value;
             }
+        }
+
+        // Fall back to collection auth block value (may be a {{VAR}} reference or a hardcoded literal)
+        String directValue = auth.values().get(authKey);
+        if (directValue != null && !directValue.isBlank()) {
+            return VariableResolver.resolve(directValue, variables);
         }
 
         return "";

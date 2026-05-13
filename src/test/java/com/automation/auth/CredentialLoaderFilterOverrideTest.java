@@ -34,12 +34,11 @@ class CredentialLoaderFilterOverrideTest {
 
         CommandLineOptions options = new CommandLineOptions(null, "demo", env, null, false, null);
         FilterSpec filter = new FilterSpec(
-                null,
-                null,
-                null,
+                null, null, null,
                 "daily",
                 new FilterAuthSpec("filter-user", "filter-pass", "filter-token", null, null),
-                Map.of("TEAM", "filter-team"));
+                Map.of("TEAM", "filter-team"),
+                null, null, null);
 
         RuntimeConfig config = CredentialLoader.load(options, filter);
 

@@ -3,7 +3,13 @@ package com.automation.excel;
 import com.automation.model.ExecutionResult;
 import com.automation.model.RuntimeConfig;
 import com.automation.postman.PostmanCollection;
+import com.automation.filter.CustomTableJoinCondition;
+import com.automation.filter.CustomTableJoinSource;
+import com.automation.filter.CustomTableSpec;
+import com.automation.filter.DateFieldConfig;
 import com.automation.filter.FilterSpec;
+import com.automation.filter.RowConditionEvaluator;
+import com.automation.filter.RowFilterGroup;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -20,9 +26,12 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -49,7 +58,9 @@ public final class ExcelReportGenerator {
             createSummarySheet(workbook, styleFactory, collection, results);
             createResultsSheet(workbook, styleFactory, results, config.includeResponseBody());
             createFolderSheets(workbook, styleFactory, results, config.includeResponseBody());
-            createResponseDataSheets(workbook, styleFactory, results, config.filterSpec());
+            Set<String> usedSheetNames = new HashSet<>();
+            createResponseDataSheets(workbook, styleFactory, results, config.filterSpec(), usedSheetNames);
+            createCustomTableSheets(workbook, styleFactory, results, config.filterSpec(), usedSheetNames);
 
             try (OutputStream outputStream = Files.newOutputStream(outputPath)) {
                 workbook.write(outputStream);
@@ -211,9 +222,8 @@ public final class ExcelReportGenerator {
         }
     }
 
-    private void createResponseDataSheets(Workbook workbook, SheetStyleFactory styleFactory, List<ExecutionResult> results, FilterSpec filterSpec) {
+    private void createResponseDataSheets(Workbook workbook, SheetStyleFactory styleFactory, List<ExecutionResult> results, FilterSpec filterSpec, Set<String> usedNames) {
         ObjectMapper mapper = new ObjectMapper();
-        Set<String> usedNames = new HashSet<>();
 
         for (ExecutionResult result : results) {
             String body = result.responseBody();
@@ -228,6 +238,9 @@ public final class ExcelReportGenerator {
 
             List<ObjectNode> rows = extractResponseRows(root);
             if (rows.isEmpty()) continue;
+
+            // Apply row-level filters from filterSpec
+            rows = applyRowFilter(rows, result.requestName(), filterSpec);
 
             LinkedHashSet<String> keys = new LinkedHashSet<>();
             for (ObjectNode row : rows) {
@@ -290,6 +303,252 @@ public final class ExcelReportGenerator {
             sheet.setAutoFilter(new CellRangeAddress(2, 2, 0, keyList.size() - 1));
             autoSize(sheet, keyList.size());
         }
+    }
+
+    // ── row filter helpers ────────────────────────────────────────────────────────
+
+    /**
+     * Filters {@code rows} against the row conditions defined in {@code filterSpec} for the
+     * given {@code requestName}. Request-specific rules take priority over the wildcard.
+     * Returns the original list unchanged when no matching rules are configured.
+     */
+    private List<ObjectNode> applyRowFilter(List<ObjectNode> rows, String requestName, FilterSpec filterSpec) {
+        if (filterSpec == null || filterSpec.rowFilters() == null || filterSpec.rowFilters().isEmpty()) {
+            return rows;
+        }
+        RowFilterGroup group = filterSpec.rowFilters().containsKey(requestName)
+                ? filterSpec.rowFilters().get(requestName)
+                : filterSpec.rowFilters().get("*");
+        if (group == null) return rows;
+
+        Map<String, DateFieldConfig> dateFields = resolveDateConfig(requestName, filterSpec);
+        Instant now = Instant.now();
+        return rows.stream()
+                .filter(row -> RowConditionEvaluator.evaluate(row, group, dateFields, now))
+                .collect(Collectors.toList());
+    }
+
+    /** Merges the wildcard and request-specific date configs, with the specific winning. */
+    private Map<String, DateFieldConfig> resolveDateConfig(String requestName, FilterSpec filterSpec) {
+        if (filterSpec == null || filterSpec.dateConfig() == null) return Collections.emptyMap();
+        Map<String, Map<String, DateFieldConfig>> all = filterSpec.dateConfig();
+        Map<String, DateFieldConfig> wildcard = all.getOrDefault("*", Collections.emptyMap());
+        Map<String, DateFieldConfig> specific  = all.getOrDefault(requestName, Collections.emptyMap());
+        if (specific.isEmpty()) return wildcard;
+        if (wildcard.isEmpty()) return specific;
+        Map<String, DateFieldConfig> merged = new LinkedHashMap<>(wildcard);
+        merged.putAll(specific);
+        return merged;
+    }
+
+    // ── custom table sheets ───────────────────────────────────────────────────────
+
+    /**
+     * Generates one sheet per {@link CustomTableSpec} defined in {@code filterSpec}.
+     * Supports single-source tables and two-source inner-join tables.
+     */
+    private void createCustomTableSheets(Workbook workbook, SheetStyleFactory styleFactory,
+                                         List<ExecutionResult> results, FilterSpec filterSpec,
+                                         Set<String> usedNames) {
+        if (filterSpec == null || filterSpec.customTables() == null || filterSpec.customTables().isEmpty()) {
+            return;
+        }
+
+        // Build request-name → rows map from executed results (using raw response body)
+        ObjectMapper mapper = new ObjectMapper();
+        Map<String, List<ObjectNode>> rowsByRequest = new LinkedHashMap<>();
+        for (ExecutionResult result : results) {
+            String body = result.responseBody();
+            if (body == null || body.isBlank()) continue;
+            try {
+                JsonNode root = mapper.readTree(body);
+                List<ObjectNode> rows = extractResponseRows(root);
+                if (!rows.isEmpty()) {
+                    rowsByRequest.put(result.requestName(), rows);
+                }
+            } catch (Exception ignored) {}
+        }
+
+        for (CustomTableSpec tableSpec : filterSpec.customTables()) {
+            List<ObjectNode> tableRows;
+            String sourceRequestName = null;
+
+            if (tableSpec.sourceRequest() != null) {
+                // ── single-source table ───────────────────────────────────────
+                sourceRequestName = tableSpec.sourceRequest();
+                tableRows = new ArrayList<>(rowsByRequest.getOrDefault(sourceRequestName, List.of()));
+            } else {
+                // ── multi-source join table ───────────────────────────────────
+                tableRows = buildJoinedRows(tableSpec, rowsByRequest, filterSpec);
+                sourceRequestName = null; // mixed sources; use null for date config
+            }
+
+            // Apply where-clause row filter
+            if (tableSpec.where() != null && !tableRows.isEmpty()) {
+                // For single source, use its date config. For joins use wildcard only.
+                Map<String, DateFieldConfig> dateFields = sourceRequestName != null
+                        ? resolveDateConfig(sourceRequestName, filterSpec)
+                        : (filterSpec.dateConfig() != null
+                                ? filterSpec.dateConfig().getOrDefault("*", Collections.emptyMap())
+                                : Collections.emptyMap());
+                Instant now = Instant.now();
+                tableRows = tableRows.stream()
+                        .filter(row -> RowConditionEvaluator.evaluate(row, tableSpec.where(), dateFields, now))
+                        .collect(Collectors.toList());
+            }
+
+            if (tableRows.isEmpty()) {
+                System.out.printf("[INFO] Custom table \"%s\" produced 0 rows after filtering — sheet skipped.%n", tableSpec.name());
+                continue;
+            }
+
+            // Determine columns to display
+            List<String> keyList = resolveCustomTableColumns(tableRows, tableSpec);
+
+            // Create sheet
+            String sheetName = uniqueSheetName(safeSheetName(tableSpec.name()), usedNames);
+            usedNames.add(sheetName);
+            Sheet sheet = workbook.createSheet(sheetName);
+            CellStyle titleStyle  = styleFactory.createTitleStyle(workbook, IndexedColors.VIOLET);
+            CellStyle headerStyle = styleFactory.createHeaderStyle(workbook, IndexedColors.PLUM);
+            CellStyle textStyle   = styleFactory.createTextStyle(workbook, false);
+
+            createTitleRow(sheet, titleStyle, tableSpec.name() + " — Custom Table");
+            Row headerRow = sheet.createRow(2);
+            for (int i = 0; i < keyList.size(); i++) {
+                Cell cell = headerRow.createCell(i);
+                cell.setCellValue(keyList.get(i));
+                cell.setCellStyle(headerStyle);
+            }
+
+            int rowIndex = 3;
+            int written  = 0;
+            for (ObjectNode rowNode : tableRows) {
+                if (written >= MAX_DATA_ROWS) {
+                    Row notice = sheet.createRow(rowIndex);
+                    CellStyle noticeStyle = styleFactory.createStatusStyle(workbook, IndexedColors.ROSE);
+                    Cell noticeCell = notice.createCell(0);
+                    noticeCell.setCellValue(String.format(
+                            "[TRUNCATED] %,d total rows exceeded the Excel limit of %,d.",
+                            tableRows.size(), MAX_DATA_ROWS));
+                    noticeCell.setCellStyle(noticeStyle);
+                    break;
+                }
+                Row row = sheet.createRow(rowIndex++);
+                for (int i = 0; i < keyList.size(); i++) {
+                    // Support "alias.field" column references in joined tables
+                    String colRef = keyList.get(i);
+                    JsonNode val  = rowNode.get(colRef);
+                    setCell(row, i, jsonNodeToString(val), textStyle);
+                }
+                written++;
+            }
+
+            sheet.createFreezePane(0, 3);
+            if (!keyList.isEmpty()) {
+                sheet.setAutoFilter(new CellRangeAddress(2, 2, 0, keyList.size() - 1));
+            }
+            autoSize(sheet, keyList.size());
+        }
+    }
+
+    /**
+     * Performs an inner join between the first two sources in {@code tableSpec.sources()}.
+     * Merged rows store fields with {@code "alias.field"} keys to avoid collisions.
+     * The left-side fields are also stored without prefix for convenience when no overlap exists.
+     */
+    private List<ObjectNode> buildJoinedRows(CustomTableSpec tableSpec,
+                                             Map<String, List<ObjectNode>> rowsByRequest,
+                                             FilterSpec filterSpec) {
+        List<CustomTableJoinSource> sources = tableSpec.sources();
+        if (sources == null || sources.size() < 2) {
+            System.err.printf("[WARN] Custom table \"%s\" requires at least 2 sources for a join.%n", tableSpec.name());
+            return List.of();
+        }
+
+        CustomTableJoinSource leftSrc  = sources.get(0);
+        CustomTableJoinSource rightSrc = sources.get(1);
+        String leftAlias  = leftSrc.as()  != null ? leftSrc.as()  : leftSrc.request();
+        String rightAlias = rightSrc.as() != null ? rightSrc.as() : rightSrc.request();
+
+        List<ObjectNode> leftRows  = rowsByRequest.getOrDefault(leftSrc.request(),  List.of());
+        List<ObjectNode> rightRows = rowsByRequest.getOrDefault(rightSrc.request(), List.of());
+
+        List<CustomTableJoinCondition> joinConditions = tableSpec.joinOn() != null
+                ? tableSpec.joinOn() : List.of();
+
+        // Build right-side index: rightField value → list of matching right rows (first condition)
+        String rightKey = joinConditions.isEmpty() ? null : joinConditions.get(0).rightField();
+        String leftKey  = joinConditions.isEmpty() ? null : joinConditions.get(0).leftField();
+
+        Map<String, List<ObjectNode>> rightIndex = new HashMap<>();
+        if (rightKey != null) {
+            for (ObjectNode rightRow : rightRows) {
+                JsonNode keyNode = rightRow.get(rightKey);
+                if (keyNode != null && !keyNode.isNull()) {
+                    rightIndex.computeIfAbsent(keyNode.asText(""), k -> new ArrayList<>()).add(rightRow);
+                }
+            }
+        }
+
+        ObjectMapper mapper = new ObjectMapper();
+        List<ObjectNode> joined = new ArrayList<>();
+
+        for (ObjectNode leftRow : leftRows) {
+            String leftKeyVal = leftKey != null && leftRow.get(leftKey) != null
+                    ? leftRow.get(leftKey).asText("") : null;
+
+            List<ObjectNode> matchingRight = leftKeyVal != null
+                    ? rightIndex.getOrDefault(leftKeyVal, List.of())
+                    : rightRows; // no join key = cross join (for small sets)
+
+            for (ObjectNode rightRow : matchingRight) {
+                // Verify additional join conditions (conditions 2+)
+                boolean conditionsMet = true;
+                for (int c = 1; c < joinConditions.size(); c++) {
+                    CustomTableJoinCondition cond = joinConditions.get(c);
+                    JsonNode lv = leftRow.get(cond.leftField());
+                    JsonNode rv = rightRow.get(cond.rightField());
+                    if (lv == null || rv == null || !lv.asText("").equals(rv.asText(""))) {
+                        conditionsMet = false;
+                        break;
+                    }
+                }
+                if (!conditionsMet) continue;
+
+                // Merge: add both sides with alias prefixes
+                ObjectNode merged = mapper.createObjectNode();
+                leftRow.fieldNames().forEachRemaining(f -> merged.set(leftAlias + "." + f, leftRow.get(f)));
+                rightRow.fieldNames().forEachRemaining(f -> merged.set(rightAlias + "." + f, rightRow.get(f)));
+                // Also add un-prefixed versions for non-conflicting fields (convenience)
+                Set<String> leftFields  = new LinkedHashSet<>();
+                Set<String> rightFields = new LinkedHashSet<>();
+                leftRow.fieldNames().forEachRemaining(leftFields::add);
+                rightRow.fieldNames().forEachRemaining(rightFields::add);
+                leftFields.stream().filter(f -> !rightFields.contains(f))
+                        .forEach(f -> merged.set(f, leftRow.get(f)));
+                rightFields.stream().filter(f -> !leftFields.contains(f))
+                        .forEach(f -> merged.set(f, rightRow.get(f)));
+                joined.add(merged);
+            }
+        }
+        return joined;
+    }
+
+    /** Determines the final ordered column list for a custom table sheet. */
+    private List<String> resolveCustomTableColumns(List<ObjectNode> rows, CustomTableSpec tableSpec) {
+        if (tableSpec.columns() != null && !tableSpec.columns().isEmpty()) {
+            // Use configured columns; keep only those present in any row
+            LinkedHashSet<String> available = new LinkedHashSet<>();
+            rows.forEach(r -> r.fieldNames().forEachRemaining(available::add));
+            List<String> ordered = new ArrayList<>(tableSpec.columns());
+            ordered.retainAll(available);
+            return ordered;
+        }
+        // No column spec: use all keys discovered from rows (preserves insertion order)
+        LinkedHashSet<String> keys = new LinkedHashSet<>();
+        rows.forEach(r -> r.fieldNames().forEachRemaining(keys::add));
+        return new ArrayList<>(keys);
     }
 
     private List<ObjectNode> extractResponseRows(JsonNode root) {
