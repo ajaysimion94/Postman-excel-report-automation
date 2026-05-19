@@ -11,7 +11,7 @@ FILTER "List posts" WHERE userId = 1;
 FILTER "List posts" WHERE (status = active OR priority = high) AND NOT archived IS TRUE;
 
 # Date filtering
-DATE_CONFIG "List posts".createdAt FORMAT yyyy-MM-dd'T'HH:mm:ss'Z' TIMEZONE UTC;
+DATE_CONFIG *.createdAt FORMAT yyyy-MM-dd'T'HH:mm:ss'Z' TIMEZONE UTC;
 FILTER "List posts" WHERE createdAt DATE_PRESET THIS_MONTH;
 
 # Column selection

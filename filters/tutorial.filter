@@ -17,7 +17,7 @@ COLUMNS "List users": id, name, email;
 COLUMNS *: id;
 
 # 5) Date parsing + date filter
-DATE_CONFIG "List posts".createdAt FORMAT yyyy-MM-dd'T'HH:mm:ss'Z' TIMEZONE UTC;
+DATE_CONFIG *.createdAt FORMAT yyyy-MM-dd'T'HH:mm:ss'Z' TIMEZONE UTC;
 FILTER "List posts" WHERE createdAt DATE_PRESET THIS_MONTH;
 
 # 6) Row shaping: DISTINCT + ORDER + pagination
