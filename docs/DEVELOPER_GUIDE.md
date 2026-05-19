@@ -8,13 +8,14 @@ Execution flow:
 
 1. Parse CLI args in `CliCommand`
 2. Resolve filter in `FilterLoader`
-   - explicit `--filter`
-   - or auto-select when exactly one filter exists in `FILTERS_DIR`
+  - explicit `--filter`
+  - or auto-select when exactly one filter exists in `FILTERS_DIR`
+  - for `.filter` files with multiple `COLLECTION` blocks, select block using CLI collection selector
 3. Load runtime variables in `CredentialLoader`
-   - merge precedence: filter auth/vars > .env > system env
+  - merge precedence: filter auth/vars > .env > system env
 4. Resolve collection path
-   - CLI collection args first
-   - fallback to filter `collection` selector
+  - CLI collection args first
+  - fallback to filter `collection` selector
 5. Parse Postman collection
 6. Validate filter strictly before HTTP calls
 7. Execute requests
@@ -25,7 +26,7 @@ Execution flow:
 `FilterSpec` fields:
 
 | Field | Type | Notes |
-|-------|------|-------|
+| ----- | ---- | ----- |
 | `collection` | String | |
 | `requests` | List\<String\> | |
 | `responseColumns` | Map\<String, List\<String\>\> | |
@@ -35,14 +36,20 @@ Execution flow:
 | `rowFilters` | Map\<String, RowFilterGroup\> | **new** — per-request or `"*"` row conditions |
 | `dateConfig` | Map\<String, Map\<String, DateFieldConfig\>\> | **new** — per-request/field date parse hints |
 | `customTables` | List\<CustomTableSpec\> | **new** — custom joined/filtered table sheets |
+| `dataShapes` | Map\<String, DataShapeSpec\> | output shaping by key: DISTINCT, ORDER BY, LIMIT/OFFSET, GROUP BY, AGG, HAVING |
+| `unions` | List\<UnionSpec\> | UNION / UNION ALL sheet definitions |
 
-`RowFilterGroup`: `logic` (AND/OR) + `rules` (List\<RowFilterRule\>)
+`RowFilterGroup`: `logic` + `rules` + optional expression tree (`RowFilterExpression`) for nested AND/OR/NOT
 
 `RowFilterRule`: `field`, `op`, `value`, `from`, `to`
 
 `DateFieldConfig`: `format` (DateTimeFormatter pattern), `timezone` (ZoneId name)
 
-`CustomTableSpec`: `name`, `sourceRequest` or `sources`+`joinOn`, `columns`, `where`
+`CustomTableSpec`: `name`, `sourceRequest` or `sources`+`joinOn`, optional `joinType` (INNER/LEFT/RIGHT/FULL), `columns`, `where`
+
+`DataShapeSpec`: `distinct`, `orderBy`, `limit`, `offset`, `groupBy`, `aggregates`, `having`
+
+`UnionSpec`: `name`, `sources`, `all`
 
 `FilterAuthSpec` maps aliases from JSON keys like `API_USERNAME` and camelCase keys like `username`.
 
@@ -60,6 +67,13 @@ Two new classes in `com.automation.filter`:
   - Date operators call `RowConditionEvaluator.parseDate()` with config-then-ISO-fallback strategy.
   - Missing fields: warn and treat rule as non-matching.
   - Unknown operators: warn and skip rule (row not excluded).
+  - Supports expression-tree evaluation for nested boolean logic and NOT.
+
+`.filter` parser (`FilterQueryParser`) supports:
+
+- statement parsing for REQUEST/FILTER/COLUMNS/DATE_CONFIG/SHAPE/UNION
+- SQL-like predicates (`LIKE`, `ILIKE`, `NOT LIKE`, `IN`, `BETWEEN`, `DATE_PRESET`)
+- collection-scoped blocks (`COLLECTION ...`) with global defaults and selected-block merge
 
 ## Strict Filter Validation Rules
 
@@ -78,8 +92,12 @@ Two new classes in `com.automation.filter`:
 - multi-source custom table missing `joinOn`
 - custom table `sourceRequest` referencing unknown request
 - duplicate custom table names
+- unsupported join type in custom table
+- invalid multi-source join condition count
 - blank `outputPrefix`
 - invalid API-key auth block
+- invalid `dataShapes` keys/values (negative limits, unsupported aggregate function, blank sort/group fields)
+- invalid union definitions (duplicate names, <2 sources, unknown source requests)
 
 Warnings (non-fatal):
 
@@ -95,7 +113,8 @@ Warnings (non-fatal):
 2. `createResultsSheet` — unchanged
 3. `createFolderSheets` — unchanged
 4. `createResponseDataSheets` — applies `rowFilters` before writing rows
-5. `createCustomTableSheets` — **new** — generates custom table sheets
+5. `createCustomTableSheets` — generates custom table sheets
+6. `createUnionSheets` — generates UNION/UNION ALL sheets
 
 `createResponseDataSheets` calls `applyRowFilter()` which resolves the matching
 `RowFilterGroup` (request-specific then wildcard) and evaluates each row via
@@ -105,9 +124,17 @@ Warnings (non-fatal):
 results, then for each `CustomTableSpec`:
 
 - **Single source**: looks up rows, applies `where` clause, selects columns.
-- **Join source**: calls `buildJoinedRows()` which builds a right-side index map,
-  performs an inner join, stores merged fields as `"alias.field"` keys (plus
-  un-prefixed copies for non-conflicting fields), then applies `where` and column selection.
+- **Join source**: calls `buildJoinedRows()` with support for INNER/LEFT/RIGHT/FULL join types and multi-source chaining.
+
+`applyDataShape()` is shared by response-data, custom-table, and union outputs and supports:
+
+- DISTINCT
+- ORDER BY
+- LIMIT/OFFSET
+- GROUP BY + aggregates (COUNT/SUM/AVG/MIN/MAX)
+- HAVING
+
+`createUnionSheets()` merges rows from listed source requests and supports UNION distinct and UNION ALL.
 
 A shared `usedNames` `Set<String>` ensures no sheet name collisions between standard
 response data sheets and custom table sheets.
@@ -115,14 +142,16 @@ response data sheets and custom table sheets.
 ## CLI Notes
 
 - `--list`: list collection JSON files from `COLLECTIONS_DIR`
-- `--list-filters`: list filter JSON files from `FILTERS_DIR`
+- `--list-filters`: list `.filter` files from `FILTERS_DIR`
 - no `--filter`:
   - if exactly one filter exists, it is auto-selected
   - if multiple filters exist, run fails and asks for explicit `--filter`
 - non-interactive daily mode:
-   - keep defaults in `.env`
-   - keep one filter in `FILTERS_DIR`
-   - run with one command: `java -jar target/postman-excel-runner-1.0.0.jar --env .env`
+  - keep defaults in `.env`
+  - keep one filter in `FILTERS_DIR`
+  - run with one command: `java -jar target/postman-excel-runner-1.0.0.jar --env .env`
+
+When a `.filter` file contains multiple `COLLECTION` blocks, pass `--collection-name` (or `--collection`) so parser block selection is unambiguous.
 
 ## Build
 
@@ -167,8 +196,8 @@ Focused tests:
 Test classes:
 
 | Class | Coverage |
-|-------|----------|
-| `FilterLoaderTest` | JSON deserialization of filter files |
+| ----- | -------- |
+| `FilterLoaderTest` | `.filter` file discovery/loading and collection block selection |
 | `FilterValidatorTest` | All strict validation rules including rowFilters, dateConfig, customTables |
 | `DateWindowResolverTest` | All 10 date presets, week boundaries, case-insensitivity, invalid preset rejection |
 | `RowConditionEvaluatorTest` | All 18 operators, AND/OR logic, missing fields, DATE_PRESET, DATE_RANGE, custom format |

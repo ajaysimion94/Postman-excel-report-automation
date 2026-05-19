@@ -115,6 +115,28 @@ public final class RequestExecutor {
         }
     }
 
+    /**
+     * Executes a single request with an extra variable override map layered on top of the
+     * collection and config variables. Used for lookup (nested) joins in custom tables —
+     * the caller supplies the per-row parameter value (e.g., {@code {"id": "42"}}).
+     *
+     * @param request       the {@link RequestSpec} to execute
+     * @param baseVariables merged collection + config variables
+     * @param overrideVars  per-row variable overrides (e.g., the lookup param value)
+     * @param timeoutSeconds per-request read timeout
+     * @param maxResponseBytes response body cap
+     * @return the {@link ExecutionResult} for this single execution
+     */
+    public ExecutionResult executeSingle(RequestSpec request,
+                                        Map<String, String> baseVariables,
+                                        Map<String, String> overrideVars,
+                                        int timeoutSeconds,
+                                        int maxResponseBytes) {
+        Map<String, String> merged = new LinkedHashMap<>(baseVariables);
+        merged.putAll(overrideVars);
+        return executeRequest(request, merged, false, timeoutSeconds, maxResponseBytes);
+    }
+
     public List<ExecutionResult> execute(PostmanCollection collection, RuntimeConfig config) {
         List<ExecutionResult> results = new ArrayList<>();
         Map<String, String> variables = new LinkedHashMap<>(collection.variables());

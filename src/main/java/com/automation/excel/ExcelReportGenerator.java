@@ -3,13 +3,19 @@ package com.automation.excel;
 import com.automation.model.ExecutionResult;
 import com.automation.model.RuntimeConfig;
 import com.automation.postman.PostmanCollection;
+import com.automation.postman.RequestSpec;
 import com.automation.filter.CustomTableJoinCondition;
 import com.automation.filter.CustomTableJoinSource;
 import com.automation.filter.CustomTableSpec;
+import com.automation.filter.AggregateSpec;
+import com.automation.filter.DataShapeSpec;
 import com.automation.filter.DateFieldConfig;
 import com.automation.filter.FilterSpec;
 import com.automation.filter.RowConditionEvaluator;
 import com.automation.filter.RowFilterGroup;
+import com.automation.filter.SortSpec;
+import com.automation.filter.UnionSpec;
+import com.automation.http.RequestExecutor;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -31,6 +37,7 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -47,7 +54,8 @@ public final class ExcelReportGenerator {
     /** Excel hard limit is 1,048,576 rows. Reserve 3 for title + blank + header. */
     private static final int MAX_DATA_ROWS = 1_048_573;
 
-    public Path generate(PostmanCollection collection, List<ExecutionResult> results, RuntimeConfig config) throws IOException {
+    public Path generate(PostmanCollection collection, List<ExecutionResult> results,
+                         RuntimeConfig config, RequestExecutor executor) throws IOException {
         Path outputPath = config.outputPath();
         if (outputPath.getParent() != null) {
             Files.createDirectories(outputPath.getParent());
@@ -60,7 +68,9 @@ public final class ExcelReportGenerator {
             createFolderSheets(workbook, styleFactory, results, config.includeResponseBody());
             Set<String> usedSheetNames = new HashSet<>();
             createResponseDataSheets(workbook, styleFactory, results, config.filterSpec(), usedSheetNames);
-            createCustomTableSheets(workbook, styleFactory, results, config.filterSpec(), usedSheetNames);
+            createCustomTableSheets(workbook, styleFactory, results, config.filterSpec(), usedSheetNames,
+                    collection, config, executor);
+                createUnionSheets(workbook, styleFactory, results, config.filterSpec(), usedSheetNames);
 
             try (OutputStream outputStream = Files.newOutputStream(outputPath)) {
                 workbook.write(outputStream);
@@ -241,6 +251,7 @@ public final class ExcelReportGenerator {
 
             // Apply row-level filters from filterSpec
             rows = applyRowFilter(rows, result.requestName(), filterSpec);
+            rows = applyDataShape(rows, result.requestName(), filterSpec);
 
             LinkedHashSet<String> keys = new LinkedHashSet<>();
             for (ObjectNode row : rows) {
@@ -341,6 +352,183 @@ public final class ExcelReportGenerator {
         return merged;
     }
 
+    private List<ObjectNode> applyDataShape(List<ObjectNode> rows, String key, FilterSpec filterSpec) {
+        if (rows == null || rows.isEmpty() || filterSpec == null || filterSpec.dataShapes() == null) {
+            return rows;
+        }
+        DataShapeSpec shape = filterSpec.dataShapes().getOrDefault(key, filterSpec.dataShapes().get("*"));
+        if (shape == null) {
+            return rows;
+        }
+
+        List<ObjectNode> shaped = new ArrayList<>(rows);
+
+        if ((shape.groupBy() != null && !shape.groupBy().isEmpty()) || (shape.aggregates() != null && !shape.aggregates().isEmpty())) {
+            shaped = applyGrouping(shaped, shape);
+            if (shape.having() != null) {
+                Instant now = Instant.now();
+                shaped = shaped.stream()
+                        .filter(row -> RowConditionEvaluator.evaluate(row, shape.having(), Collections.emptyMap(), now))
+                        .collect(Collectors.toList());
+            }
+        }
+
+        if (shape.distinct()) {
+            Map<String, ObjectNode> unique = new LinkedHashMap<>();
+            for (ObjectNode row : shaped) {
+                unique.putIfAbsent(row.toString(), row);
+            }
+            shaped = new ArrayList<>(unique.values());
+        }
+
+        if (shape.orderBy() != null && !shape.orderBy().isEmpty()) {
+            Comparator<ObjectNode> comparator = null;
+            for (SortSpec sort : shape.orderBy()) {
+                Comparator<ObjectNode> c = (left, right) -> compareField(left, right, sort.field(), sort.descending());
+                comparator = comparator == null ? c : comparator.thenComparing(c);
+            }
+            shaped.sort(comparator);
+        }
+
+        int from = shape.offset() == null ? 0 : Math.max(0, shape.offset());
+        if (from > shaped.size()) {
+            return List.of();
+        }
+        int to = shaped.size();
+        if (shape.limit() != null) {
+            to = Math.min(shaped.size(), from + Math.max(0, shape.limit()));
+        }
+        return new ArrayList<>(shaped.subList(from, to));
+    }
+
+    private List<ObjectNode> applyGrouping(List<ObjectNode> rows, DataShapeSpec shape) {
+        List<String> groupFields = shape.groupBy() == null ? List.of() : shape.groupBy();
+        List<AggregateSpec> aggregates = shape.aggregates() == null ? List.of() : shape.aggregates();
+
+        if (groupFields.isEmpty() && aggregates.isEmpty()) {
+            return rows;
+        }
+
+        Map<String, List<ObjectNode>> groups = new LinkedHashMap<>();
+        for (ObjectNode row : rows) {
+            String key = buildGroupKey(row, groupFields);
+            groups.computeIfAbsent(key, ignored -> new ArrayList<>()).add(row);
+        }
+
+        ObjectMapper mapper = new ObjectMapper();
+        List<ObjectNode> out = new ArrayList<>();
+        for (List<ObjectNode> members : groups.values()) {
+            ObjectNode grouped = mapper.createObjectNode();
+            ObjectNode first = members.get(0);
+            for (String field : groupFields) {
+                JsonNode value = first.get(field);
+                if (value != null) {
+                    grouped.set(field, value);
+                }
+            }
+            for (AggregateSpec aggregate : aggregates) {
+                applyAggregate(grouped, members, aggregate);
+            }
+            out.add(grouped);
+        }
+        return out;
+    }
+
+    private String buildGroupKey(ObjectNode row, List<String> fields) {
+        if (fields.isEmpty()) {
+            return "__all__";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (String field : fields) {
+            JsonNode value = row.get(field);
+            sb.append(value == null || value.isNull() ? "<null>" : value.asText(""))
+                    .append('\u001F');
+        }
+        return sb.toString();
+    }
+
+    private void applyAggregate(ObjectNode target, List<ObjectNode> members, AggregateSpec aggregate) {
+        String fn = aggregate.function().toUpperCase();
+        String field = aggregate.field();
+        String alias = aggregate.alias();
+
+        switch (fn) {
+            case "COUNT" -> {
+                long count;
+                if ("*".equals(field)) {
+                    count = members.size();
+                } else {
+                    count = members.stream()
+                            .map(row -> row.get(field))
+                            .filter(node -> node != null && !node.isNull())
+                            .count();
+                }
+                target.put(alias, count);
+            }
+            case "SUM", "AVG" -> {
+                double sum = 0;
+                int count = 0;
+                for (ObjectNode row : members) {
+                    JsonNode node = row.get(field);
+                    if (node == null || node.isNull()) continue;
+                    try {
+                        sum += Double.parseDouble(node.asText(""));
+                        count++;
+                    } catch (NumberFormatException ignored) {
+                    }
+                }
+                if ("AVG".equals(fn)) {
+                    target.put(alias, count == 0 ? 0 : (sum / count));
+                } else {
+                    target.put(alias, sum);
+                }
+            }
+            case "MIN", "MAX" -> {
+                String best = null;
+                for (ObjectNode row : members) {
+                    JsonNode node = row.get(field);
+                    if (node == null || node.isNull()) continue;
+                    String value = node.asText("");
+                    if (best == null) {
+                        best = value;
+                        continue;
+                    }
+                    int cmp = comparePossiblyNumeric(value, best);
+                    if (("MIN".equals(fn) && cmp < 0) || ("MAX".equals(fn) && cmp > 0)) {
+                        best = value;
+                    }
+                }
+                target.put(alias, best == null ? "" : best);
+            }
+            default -> throw new IllegalArgumentException("Unsupported aggregate function: " + aggregate.function());
+        }
+    }
+
+    private int compareField(ObjectNode left, ObjectNode right, String field, boolean descending) {
+        JsonNode lv = left.get(field);
+        JsonNode rv = right.get(field);
+
+        int result;
+        if (lv == null || lv.isNull()) {
+            result = (rv == null || rv.isNull()) ? 0 : 1;
+        } else if (rv == null || rv.isNull()) {
+            result = -1;
+        } else {
+            result = comparePossiblyNumeric(lv.asText(""), rv.asText(""));
+        }
+        return descending ? -result : result;
+    }
+
+    private int comparePossiblyNumeric(String a, String b) {
+        try {
+            double ad = Double.parseDouble(a);
+            double bd = Double.parseDouble(b);
+            return Double.compare(ad, bd);
+        } catch (NumberFormatException ignored) {
+            return a.compareToIgnoreCase(b);
+        }
+    }
+
     // ── custom table sheets ───────────────────────────────────────────────────────
 
     /**
@@ -349,7 +537,9 @@ public final class ExcelReportGenerator {
      */
     private void createCustomTableSheets(Workbook workbook, SheetStyleFactory styleFactory,
                                          List<ExecutionResult> results, FilterSpec filterSpec,
-                                         Set<String> usedNames) {
+                                         Set<String> usedNames,
+                                         PostmanCollection collection, RuntimeConfig config,
+                                         RequestExecutor executor) {
         if (filterSpec == null || filterSpec.customTables() == null || filterSpec.customTables().isEmpty()) {
             return;
         }
@@ -373,7 +563,12 @@ public final class ExcelReportGenerator {
             List<ObjectNode> tableRows;
             String sourceRequestName = null;
 
-            if (tableSpec.sourceRequest() != null) {
+            if (tableSpec.lookupRequest() != null) {
+                // ── lookup (nested) table ─────────────────────────────────────
+                sourceRequestName = tableSpec.sourceRequest();
+                List<ObjectNode> sourceRows = new ArrayList<>(rowsByRequest.getOrDefault(sourceRequestName, List.of()));
+                tableRows = buildLookupRows(tableSpec, sourceRows, collection, config, executor, mapper);
+            } else if (tableSpec.sourceRequest() != null) {
                 // ── single-source table ───────────────────────────────────────
                 sourceRequestName = tableSpec.sourceRequest();
                 tableRows = new ArrayList<>(rowsByRequest.getOrDefault(sourceRequestName, List.of()));
@@ -396,6 +591,8 @@ public final class ExcelReportGenerator {
                         .filter(row -> RowConditionEvaluator.evaluate(row, tableSpec.where(), dateFields, now))
                         .collect(Collectors.toList());
             }
+
+            tableRows = applyDataShape(tableRows, tableSpec.name(), filterSpec);
 
             if (tableRows.isEmpty()) {
                 System.out.printf("[INFO] Custom table \"%s\" produced 0 rows after filtering — sheet skipped.%n", tableSpec.name());
@@ -452,6 +649,93 @@ public final class ExcelReportGenerator {
         }
     }
 
+    private void createUnionSheets(Workbook workbook, SheetStyleFactory styleFactory,
+                                   List<ExecutionResult> results, FilterSpec filterSpec,
+                                   Set<String> usedNames) {
+        if (filterSpec == null || filterSpec.unions() == null || filterSpec.unions().isEmpty()) {
+            return;
+        }
+
+        ObjectMapper mapper = new ObjectMapper();
+        Map<String, List<ObjectNode>> rowsByRequest = new LinkedHashMap<>();
+        for (ExecutionResult result : results) {
+            String body = result.responseBody();
+            if (body == null || body.isBlank()) continue;
+            try {
+                JsonNode root = mapper.readTree(body);
+                List<ObjectNode> rows = extractResponseRows(root);
+                if (!rows.isEmpty()) {
+                    rowsByRequest.put(result.requestName(), rows);
+                }
+            } catch (Exception ignored) {
+            }
+        }
+
+        for (UnionSpec union : filterSpec.unions()) {
+            List<ObjectNode> unionRows = new ArrayList<>();
+            for (String source : union.sources()) {
+                List<ObjectNode> sourceRows = new ArrayList<>(rowsByRequest.getOrDefault(source, List.of()));
+                sourceRows = applyRowFilter(sourceRows, source, filterSpec);
+                unionRows.addAll(sourceRows);
+            }
+
+            if (!union.all()) {
+                Map<String, ObjectNode> unique = new LinkedHashMap<>();
+                for (ObjectNode row : unionRows) {
+                    unique.putIfAbsent(row.toString(), row);
+                }
+                unionRows = new ArrayList<>(unique.values());
+            }
+
+            unionRows = applyDataShape(unionRows, union.name(), filterSpec);
+            if (unionRows.isEmpty()) {
+                continue;
+            }
+
+            LinkedHashSet<String> keys = new LinkedHashSet<>();
+            for (ObjectNode row : unionRows) {
+                row.fieldNames().forEachRemaining(keys::add);
+            }
+            List<String> keyList = new ArrayList<>(keys);
+
+            String sheetName = uniqueSheetName(safeSheetName(union.name()), usedNames);
+            usedNames.add(sheetName);
+
+            Sheet sheet = workbook.createSheet(sheetName);
+            CellStyle titleStyle = styleFactory.createTitleStyle(workbook, IndexedColors.DARK_RED);
+            CellStyle headerStyle = styleFactory.createHeaderStyle(workbook, IndexedColors.RED);
+            CellStyle textStyle = styleFactory.createTextStyle(workbook, false);
+
+            createTitleRow(sheet, titleStyle, union.name() + " — UNION");
+            Row headerRow = sheet.createRow(2);
+            for (int i = 0; i < keyList.size(); i++) {
+                Cell cell = headerRow.createCell(i);
+                cell.setCellValue(keyList.get(i));
+                cell.setCellStyle(headerStyle);
+            }
+
+            int rowIndex = 3;
+            int written = 0;
+            for (ObjectNode rowNode : unionRows) {
+                if (written >= MAX_DATA_ROWS) {
+                    break;
+                }
+                Row row = sheet.createRow(rowIndex++);
+                for (int i = 0; i < keyList.size(); i++) {
+                    JsonNode val = rowNode.get(keyList.get(i));
+                    setCell(row, i, jsonNodeToString(val), textStyle);
+                }
+                written++;
+            }
+
+            sheet.createFreezePane(0, 3);
+            if (!keyList.isEmpty()) {
+                sheet.setAutoFilter(new CellRangeAddress(2, 2, 0, keyList.size() - 1));
+            }
+            autoSize(sheet, keyList.size());
+        }
+    }
+
     /**
      * Performs an inner join between the first two sources in {@code tableSpec.sources()}.
      * Merged rows store fields with {@code "alias.field"} keys to avoid collisions.
@@ -465,74 +749,260 @@ public final class ExcelReportGenerator {
             System.err.printf("[WARN] Custom table \"%s\" requires at least 2 sources for a join.%n", tableSpec.name());
             return List.of();
         }
-
-        CustomTableJoinSource leftSrc  = sources.get(0);
-        CustomTableJoinSource rightSrc = sources.get(1);
-        String leftAlias  = leftSrc.as()  != null ? leftSrc.as()  : leftSrc.request();
-        String rightAlias = rightSrc.as() != null ? rightSrc.as() : rightSrc.request();
-
-        List<ObjectNode> leftRows  = rowsByRequest.getOrDefault(leftSrc.request(),  List.of());
-        List<ObjectNode> rightRows = rowsByRequest.getOrDefault(rightSrc.request(), List.of());
-
-        List<CustomTableJoinCondition> joinConditions = tableSpec.joinOn() != null
-                ? tableSpec.joinOn() : List.of();
-
-        // Build right-side index: rightField value → list of matching right rows (first condition)
-        String rightKey = joinConditions.isEmpty() ? null : joinConditions.get(0).rightField();
-        String leftKey  = joinConditions.isEmpty() ? null : joinConditions.get(0).leftField();
-
-        Map<String, List<ObjectNode>> rightIndex = new HashMap<>();
-        if (rightKey != null) {
-            for (ObjectNode rightRow : rightRows) {
-                JsonNode keyNode = rightRow.get(rightKey);
-                if (keyNode != null && !keyNode.isNull()) {
-                    rightIndex.computeIfAbsent(keyNode.asText(""), k -> new ArrayList<>()).add(rightRow);
-                }
-            }
-        }
-
         ObjectMapper mapper = new ObjectMapper();
-        List<ObjectNode> joined = new ArrayList<>();
+        String joinType = tableSpec.joinType() == null ? "INNER" : tableSpec.joinType().toUpperCase();
 
-        for (ObjectNode leftRow : leftRows) {
-            String leftKeyVal = leftKey != null && leftRow.get(leftKey) != null
-                    ? leftRow.get(leftKey).asText("") : null;
+        CustomTableJoinSource first = sources.get(0);
+        String firstAlias = first.as() != null ? first.as() : first.request();
+        List<ObjectNode> seedRows = rowsByRequest.getOrDefault(first.request(), List.of());
+        List<ObjectNode> accumulated = new ArrayList<>();
+        for (ObjectNode row : seedRows) {
+            accumulated.add(decorateRow(row, firstAlias, mapper));
+        }
 
-            List<ObjectNode> matchingRight = leftKeyVal != null
-                    ? rightIndex.getOrDefault(leftKeyVal, List.of())
-                    : rightRows; // no join key = cross join (for small sets)
+        for (int idx = 1; idx < sources.size(); idx++) {
+            CustomTableJoinSource rightSource = sources.get(idx);
+            String rightAlias = rightSource.as() != null ? rightSource.as() : rightSource.request();
+            List<ObjectNode> rightRows = rowsByRequest.getOrDefault(rightSource.request(), List.of());
 
-            for (ObjectNode rightRow : matchingRight) {
-                // Verify additional join conditions (conditions 2+)
-                boolean conditionsMet = true;
-                for (int c = 1; c < joinConditions.size(); c++) {
-                    CustomTableJoinCondition cond = joinConditions.get(c);
-                    JsonNode lv = leftRow.get(cond.leftField());
-                    JsonNode rv = rightRow.get(cond.rightField());
-                    if (lv == null || rv == null || !lv.asText("").equals(rv.asText(""))) {
-                        conditionsMet = false;
-                        break;
-                    }
+            List<CustomTableJoinCondition> hopConditions = resolveJoinConditionsForHop(tableSpec.joinOn(), sources.size(), idx);
+            accumulated = joinHop(accumulated, rightRows, rightAlias, hopConditions, joinType, mapper);
+        }
+
+        return accumulated;
+    }
+
+    private List<CustomTableJoinCondition> resolveJoinConditionsForHop(List<CustomTableJoinCondition> all,
+                                                                       int sourceCount,
+                                                                       int hopIndex) {
+        if (all == null || all.isEmpty()) {
+            return List.of();
+        }
+        if (sourceCount <= 2) {
+            return all;
+        }
+        if (all.size() == 1) {
+            return all;
+        }
+        // one condition per hop when sourceCount > 2
+        return List.of(all.get(hopIndex - 1));
+    }
+
+    private List<ObjectNode> joinHop(List<ObjectNode> leftRows,
+                                     List<ObjectNode> rightRows,
+                                     String rightAlias,
+                                     List<CustomTableJoinCondition> conditions,
+                                     String joinType,
+                                     ObjectMapper mapper) {
+        List<ObjectNode> out = new ArrayList<>();
+        Set<Integer> matchedRight = new HashSet<>();
+
+        for (ObjectNode left : leftRows) {
+            boolean found = false;
+            for (int idx = 0; idx < rightRows.size(); idx++) {
+                ObjectNode right = rightRows.get(idx);
+                if (!matchesAll(left, right, conditions)) {
+                    continue;
                 }
-                if (!conditionsMet) continue;
-
-                // Merge: add both sides with alias prefixes
-                ObjectNode merged = mapper.createObjectNode();
-                leftRow.fieldNames().forEachRemaining(f -> merged.set(leftAlias + "." + f, leftRow.get(f)));
-                rightRow.fieldNames().forEachRemaining(f -> merged.set(rightAlias + "." + f, rightRow.get(f)));
-                // Also add un-prefixed versions for non-conflicting fields (convenience)
-                Set<String> leftFields  = new LinkedHashSet<>();
-                Set<String> rightFields = new LinkedHashSet<>();
-                leftRow.fieldNames().forEachRemaining(leftFields::add);
-                rightRow.fieldNames().forEachRemaining(rightFields::add);
-                leftFields.stream().filter(f -> !rightFields.contains(f))
-                        .forEach(f -> merged.set(f, leftRow.get(f)));
-                rightFields.stream().filter(f -> !leftFields.contains(f))
-                        .forEach(f -> merged.set(f, rightRow.get(f)));
-                joined.add(merged);
+                found = true;
+                matchedRight.add(idx);
+                out.add(mergeRows(left, right, rightAlias, mapper));
+            }
+            if (!found && ("LEFT".equals(joinType) || "FULL".equals(joinType))) {
+                out.add(left.deepCopy());
             }
         }
-        return joined;
+
+        if ("RIGHT".equals(joinType) || "FULL".equals(joinType)) {
+            for (int idx = 0; idx < rightRows.size(); idx++) {
+                if (matchedRight.contains(idx)) {
+                    continue;
+                }
+                out.add(decorateRow(rightRows.get(idx), rightAlias, mapper));
+            }
+        }
+
+        return out;
+    }
+
+    private boolean matchesAll(ObjectNode left, ObjectNode right, List<CustomTableJoinCondition> conditions) {
+        if (conditions == null || conditions.isEmpty()) {
+            return true;
+        }
+        for (CustomTableJoinCondition condition : conditions) {
+            JsonNode leftValue = resolveField(left, condition.leftField(), true);
+            JsonNode rightValue = resolveField(right, condition.rightField(), false);
+            if (leftValue == null || rightValue == null || !leftValue.asText("").equals(rightValue.asText(""))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private JsonNode resolveField(ObjectNode row, String field, boolean searchAliasSuffix) {
+        if (field == null || field.isBlank()) {
+            return null;
+        }
+        JsonNode direct = row.get(field);
+        if (direct != null) {
+            return direct;
+        }
+
+        String trimmed = field;
+        int dot = field.indexOf('.');
+        if (dot >= 0 && dot < field.length() - 1) {
+            trimmed = field.substring(dot + 1);
+            JsonNode aliasDirect = row.get(field);
+            if (aliasDirect != null) {
+                return aliasDirect;
+            }
+            JsonNode unprefixed = row.get(trimmed);
+            if (unprefixed != null) {
+                return unprefixed;
+            }
+        }
+
+        if (searchAliasSuffix) {
+            Iterator<String> fields = row.fieldNames();
+            while (fields.hasNext()) {
+                String candidate = fields.next();
+                if (candidate.endsWith("." + trimmed)) {
+                    return row.get(candidate);
+                }
+            }
+        }
+        return null;
+    }
+
+    private ObjectNode decorateRow(ObjectNode row, String alias, ObjectMapper mapper) {
+        ObjectNode out = mapper.createObjectNode();
+        row.fieldNames().forEachRemaining(field -> {
+            JsonNode value = row.get(field);
+            out.set(alias + "." + field, value);
+            if (!out.has(field)) {
+                out.set(field, value);
+            }
+        });
+        return out;
+    }
+
+    private ObjectNode mergeRows(ObjectNode left, ObjectNode right, String rightAlias, ObjectMapper mapper) {
+        ObjectNode merged = left.deepCopy();
+        right.fieldNames().forEachRemaining(field -> {
+            JsonNode value = right.get(field);
+            merged.set(rightAlias + "." + field, value);
+            if (!merged.has(field)) {
+                merged.set(field, value);
+            }
+        });
+        return merged;
+    }
+
+    /**
+     * Builds rows for a lookup (nested) custom table.
+     *
+     * <p>For each row in {@code sourceRows}, the value of {@code tableSpec.lookupParam()} is
+     * extracted and injected as a variable override into {@code tableSpec.lookupRequest()}.
+     * The detail response is fetched, merged with the source row, and added to the result.
+     *
+     * <p>Conflicting field names from the detail response are stored with a {@code "detail."}
+     * prefix; unambiguous fields are stored both with and without the prefix for convenience.
+     */
+    private List<ObjectNode> buildLookupRows(CustomTableSpec tableSpec,
+                                             List<ObjectNode> sourceRows,
+                                             PostmanCollection collection,
+                                             RuntimeConfig config,
+                                             RequestExecutor executor,
+                                             ObjectMapper mapper) {
+        String lookupRequestName = tableSpec.lookupRequest();
+        String lookupParam       = tableSpec.lookupParam();
+
+        RequestSpec lookupSpec = collection.requests().stream()
+                .filter(r -> r.name().equals(lookupRequestName))
+                .findFirst()
+                .orElse(null);
+        if (lookupSpec == null) {
+            System.err.printf("[WARN] Lookup table \"%s\": lookupRequest \"%s\" not found in collection — skipping.%n",
+                    tableSpec.name(), lookupRequestName);
+            return List.of();
+        }
+
+        // Build base variables once (collection defaults + config overrides)
+        Map<String, String> baseVars = new LinkedHashMap<>(collection.variables());
+        baseVars.putAll(config.variables());
+
+        int timeoutSeconds   = parseIntVar(config.variables(), "REQUEST_TIMEOUT_SECONDS", 30);
+        int maxResponseBytes = parseMbVar(config.variables(), "MAX_RESPONSE_MB", 10 * 1024 * 1024);
+
+        List<ObjectNode> result = new ArrayList<>();
+        int total   = sourceRows.size();
+        int success = 0;
+        int failed  = 0;
+
+        System.out.printf("[INFO] Lookup table \"%s\": executing \"%s\" for %d source rows…%n",
+                tableSpec.name(), lookupRequestName, total);
+
+        for (ObjectNode sourceRow : sourceRows) {
+            JsonNode paramNode = sourceRow.get(lookupParam);
+            if (paramNode == null || paramNode.isNull()) {
+                failed++;
+                continue; // skip rows where the lookup key is absent
+            }
+            String paramValue = paramNode.asText();
+
+            // Inject the param value as a variable so {{lookupParam}} in the URL is resolved
+            Map<String, String> overrideVars = Map.of(lookupParam, paramValue);
+
+            ExecutionResult lookupResult = executor.executeSingle(
+                    lookupSpec, baseVars, overrideVars, timeoutSeconds, maxResponseBytes);
+
+            if (!lookupResult.success() || lookupResult.responseBody() == null
+                    || lookupResult.responseBody().isBlank()) {
+                failed++;
+                continue;
+            }
+
+            // Parse the detail response — expect a single object or the first element of an array
+            List<ObjectNode> detailRows;
+            try {
+                JsonNode detailRoot = mapper.readTree(lookupResult.responseBody());
+                detailRows = extractResponseRows(detailRoot);
+            } catch (Exception e) {
+                failed++;
+                continue;
+            }
+
+            if (detailRows.isEmpty()) {
+                failed++;
+                continue;
+            }
+
+            // Use the first (or only) detail object and merge with the source row
+            ObjectNode detailRow = detailRows.get(0);
+
+            Set<String> sourceFields = new LinkedHashSet<>();
+            sourceRow.fieldNames().forEachRemaining(sourceFields::add);
+            Set<String> detailFields = new LinkedHashSet<>();
+            detailRow.fieldNames().forEachRemaining(detailFields::add);
+
+            ObjectNode merged = mapper.createObjectNode();
+            // All source fields go in as-is
+            sourceFields.forEach(f -> merged.set(f, sourceRow.get(f)));
+            // Detail fields: always store with "detail." prefix; also store without prefix if no clash
+            detailFields.forEach(f -> {
+                merged.set("detail." + f, detailRow.get(f));
+                if (!sourceFields.contains(f)) {
+                    merged.set(f, detailRow.get(f));
+                }
+            });
+
+            result.add(merged);
+            success++;
+        }
+
+        System.out.printf("[INFO] Lookup table \"%s\": %d merged, %d skipped/failed (total %d).%n",
+                tableSpec.name(), success, failed, total);
+        return result;
     }
 
     /** Determines the final ordered column list for a custom table sheet. */
@@ -601,5 +1071,17 @@ public final class ExcelReportGenerator {
             return cleaned.substring(0, 31);
         }
         return cleaned;
+    }
+
+    private static int parseIntVar(Map<String, String> vars, String key, int defaultValue) {
+        String val = vars.get(key);
+        if (val == null || val.isBlank()) return defaultValue;
+        try { return Integer.parseInt(val.trim()); } catch (NumberFormatException e) { return defaultValue; }
+    }
+
+    private static int parseMbVar(Map<String, String> vars, String key, int defaultBytes) {
+        String val = vars.get(key);
+        if (val == null || val.isBlank()) return defaultBytes;
+        try { return (int) (Double.parseDouble(val.trim()) * 1024 * 1024); } catch (NumberFormatException e) { return defaultBytes; }
     }
 }

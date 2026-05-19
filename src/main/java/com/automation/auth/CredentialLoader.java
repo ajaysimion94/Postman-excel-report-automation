@@ -1,5 +1,6 @@
 package com.automation.auth;
 
+import com.automation.auth.config.CredentialStore;
 import com.automation.cli.CommandLineOptions;
 import com.automation.filter.FilterAuthSpec;
 import com.automation.filter.FilterSpec;
@@ -40,6 +41,7 @@ public final class CredentialLoader {
         }
 
         System.getenv().forEach(variables::putIfAbsent);
+        applyCredentialStore(variables);
         applyFilterOverrides(variables, filterSpec);
 
         // Resolve collection path: explicit --collection wins, then --collection-name + COLLECTIONS_DIR
@@ -87,6 +89,21 @@ public final class CredentialLoader {
                 Map.copyOf(variables),
                 filterSpec
         );
+    }
+
+    private static void applyCredentialStore(Map<String, String> variables) {
+        try {
+            CredentialStore store = CredentialStore.system();
+            store.getActive().ifPresent(profile -> {
+                putIfNotBlank(variables, "API_USERNAME", profile.apiUsername());
+                putIfNotBlank(variables, "API_PASSWORD", profile.apiPassword());
+                putIfNotBlank(variables, "BEARER_TOKEN", profile.bearerToken());
+                putIfNotBlank(variables, "API_KEY",      profile.apiKey());
+                putIfNotBlank(variables, "APIKEY_HEADER", profile.apiKeyHeader());
+            });
+        } catch (Exception e) {
+            System.err.println("[WARN] Could not load credential store: " + e.getMessage());
+        }
     }
 
     private static void applyFilterOverrides(Map<String, String> variables, FilterSpec filterSpec) {

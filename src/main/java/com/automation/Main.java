@@ -3,6 +3,7 @@ package com.automation;
 import com.automation.auth.CredentialLoader;
 import com.automation.cli.CliCommand;
 import com.automation.cli.CommandLineOptions;
+import com.automation.cli.ConfigCommand;
 import com.automation.excel.ExcelReportGenerator;
 import com.automation.filter.FilterLoader;
 import com.automation.filter.FilterSpec;
@@ -25,10 +26,17 @@ public final class Main {
     public static void main(String[] args) throws Exception {
         CommandLineOptions options = CliCommand.parse(args);
 
+        // --config mode: manage credential profiles, then exit
+        if (options.configMode()) {
+            ConfigCommand.run(options.configAction(), options.configTargetUser());
+            return;
+        }
+
         // Load filter before CredentialLoader so the outputPrefix can be applied
         FilterLoader.LoadedFilter loadedFilter = FilterLoader.load(
                 options.filterPath(),
-                readFiltersDir(options));
+            readFiltersDir(options),
+            preferredCollectionSelector(options));
         FilterSpec filterSpec = loadedFilter == null ? null : loadedFilter.spec();
         RuntimeConfig config = CredentialLoader.load(options, filterSpec);
 
@@ -42,7 +50,8 @@ public final class Main {
         }
 
         List<ExecutionResult> results = new RequestExecutor(config.variables()).execute(collection, config);
-        Path outputPath = new ExcelReportGenerator().generate(collection, results, config);
+        RequestExecutor executor = new RequestExecutor(config.variables());
+        Path outputPath = new ExcelReportGenerator().generate(collection, results, config, executor);
         System.out.println("Excel report written to: " + outputPath.toAbsolutePath());
     }
 
@@ -73,5 +82,16 @@ public final class Main {
             }
         }
         return System.getenv("FILTERS_DIR");
+    }
+
+    private static String preferredCollectionSelector(CommandLineOptions options) {
+        if (options.collectionName() != null && !options.collectionName().isBlank()) {
+            return options.collectionName();
+        }
+        if (options.collectionPath() != null) {
+            String filename = options.collectionPath().getFileName().toString();
+            return filename.replaceFirst("\\.json$", "");
+        }
+        return null;
     }
 }

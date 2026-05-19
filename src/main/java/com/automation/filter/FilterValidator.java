@@ -11,7 +11,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-/** Valid row-filter operators accepted in filter JSON. */
+/** Valid row-filter operators accepted in filter specs. */
 
 public final class FilterValidator {
 
@@ -184,20 +184,22 @@ public final class FilterValidator {
         }
 
         // Validate customTables
+        Set<String> customTableNames = new java.util.HashSet<>();
         if (filter.customTables() != null) {
-            Set<String> tableNames = new java.util.HashSet<>();
             for (int i = 0; i < filter.customTables().size(); i++) {
                 CustomTableSpec table = filter.customTables().get(i);
                 String tableLabel = "customTables[" + i + "]";
                 if (table.name() == null || table.name().isBlank()) {
                     throw new IllegalArgumentException(tableLabel + " is missing a non-blank name.");
                 }
-                if (!tableNames.add(table.name())) {
+                if (!customTableNames.add(table.name())) {
                     throw new IllegalArgumentException(
                             "Filter customTables has duplicate table name: \"" + table.name() + "\".");
                 }
                 boolean hasSingleSource = table.sourceRequest() != null;
                 boolean hasMultiSource  = table.sources() != null && !table.sources().isEmpty();
+                boolean hasLookup       = table.lookupRequest() != null;
+
                 if (!hasSingleSource && !hasMultiSource) {
                     throw new IllegalArgumentException(
                             tableLabel + " (\"" + table.name() + "\") must specify either sourceRequest or sources.");
@@ -211,7 +213,33 @@ public final class FilterValidator {
                             tableLabel + " (\"" + table.name() + "\") sourceRequest \"" +
                             table.sourceRequest() + "\" is not in the collection. Available: " + available);
                 }
+                // Lookup validation
+                if (hasLookup) {
+                    if (!hasSingleSource) {
+                        throw new IllegalArgumentException(
+                                tableLabel + " (\"" + table.name() + "\") lookupRequest requires sourceRequest to be set.");
+                    }
+                    if (!available.contains(table.lookupRequest())) {
+                        throw new IllegalArgumentException(
+                                tableLabel + " (\"" + table.name() + "\") lookupRequest \"" +
+                                table.lookupRequest() + "\" is not in the collection. Available: " + available);
+                    }
+                    if (table.lookupParam() == null || table.lookupParam().isBlank()) {
+                        throw new IllegalArgumentException(
+                                tableLabel + " (\"" + table.name() + "\") lookupRequest requires lookupParam to be set.");
+                    }
+                }
+                if (!hasLookup && table.lookupParam() != null) {
+                    throw new IllegalArgumentException(
+                            tableLabel + " (\"" + table.name() + "\") lookupParam is set but lookupRequest is missing.");
+                }
                 if (hasMultiSource) {
+                    String joinType = table.joinType() == null ? "INNER" : table.joinType().toUpperCase();
+                    if (!Set.of("INNER", "LEFT", "RIGHT", "FULL").contains(joinType)) {
+                        throw new IllegalArgumentException(
+                                tableLabel + " (\"" + table.name() + "\") has unsupported joinType \"" + table.joinType() +
+                                        "\". Use INNER, LEFT, RIGHT, or FULL.");
+                    }
                     for (CustomTableJoinSource src : table.sources()) {
                         if (src.request() == null || src.request().isBlank()) {
                             throw new IllegalArgumentException(
@@ -227,6 +255,14 @@ public final class FilterValidator {
                         throw new IllegalArgumentException(
                                 tableLabel + " (\"" + table.name() + "\") with multiple sources must specify joinOn.");
                     }
+                    if (table.sources().size() > 2
+                            && table.joinOn().size() != 1
+                            && table.joinOn().size() != table.sources().size() - 1) {
+                        throw new IllegalArgumentException(
+                                tableLabel + " (\"" + table.name() + "\") with " + table.sources().size() +
+                                        " sources requires joinOn size of 1 (reused per hop) or " +
+                                        (table.sources().size() - 1) + " (one condition per hop).");
+                    }
                     for (CustomTableJoinCondition cond : table.joinOn()) {
                         if (isBlank(cond.leftField()) || isBlank(cond.rightField())) {
                             throw new IllegalArgumentException(
@@ -237,6 +273,102 @@ public final class FilterValidator {
                 if (table.where() != null) {
                     validateRowFilterGroup(table.where(), tableLabel + ".where");
                 }
+            }
+        }
+
+        Set<String> unionNames = new java.util.HashSet<>();
+        if (filter.unions() != null) {
+            for (int i = 0; i < filter.unions().size(); i++) {
+                UnionSpec union = filter.unions().get(i);
+                String unionLabel = "unions[" + i + "]";
+                if (union.name() == null || union.name().isBlank()) {
+                    throw new IllegalArgumentException(unionLabel + " must have a non-blank name.");
+                }
+                if (!unionNames.add(union.name())) {
+                    throw new IllegalArgumentException("Filter unions has duplicate name: \"" + union.name() + "\".");
+                }
+                if (union.sources() == null || union.sources().size() < 2) {
+                    throw new IllegalArgumentException(unionLabel + " (\"" + union.name() + "\") must include at least 2 sources.");
+                }
+                for (String source : union.sources()) {
+                    if (source == null || source.isBlank()) {
+                        throw new IllegalArgumentException(unionLabel + " (\"" + union.name() + "\") has a blank source entry.");
+                    }
+                    if (!available.contains(source)) {
+                        throw new IllegalArgumentException(
+                                unionLabel + " (\"" + union.name() + "\") source \"" + source +
+                                        "\" is not in the collection. Available: " + available);
+                    }
+                }
+            }
+        }
+
+        // Validate dataShapes
+        if (filter.dataShapes() != null && !filter.dataShapes().isEmpty()) {
+            List<String> invalidShapeKeys = new ArrayList<>();
+            for (Map.Entry<String, DataShapeSpec> entry : filter.dataShapes().entrySet()) {
+                String key = entry.getKey();
+                if (key == null || key.isBlank()) {
+                    invalidShapeKeys.add("<blank>");
+                    continue;
+                }
+                if (!"*".equals(key) && !available.contains(key) && !customTableNames.contains(key)) {
+                    if (!unionNames.contains(key)) {
+                    invalidShapeKeys.add(key);
+                    }
+                }
+                DataShapeSpec shape = entry.getValue();
+                if (shape == null) {
+                    continue;
+                }
+                if (shape.limit() != null && shape.limit() < 0) {
+                    throw new IllegalArgumentException("Filter dataShapes for \"" + key + "\" has negative LIMIT.");
+                }
+                if (shape.offset() != null && shape.offset() < 0) {
+                    throw new IllegalArgumentException("Filter dataShapes for \"" + key + "\" has negative OFFSET.");
+                }
+                if (shape.orderBy() != null) {
+                    for (int idx = 0; idx < shape.orderBy().size(); idx++) {
+                        SortSpec sort = shape.orderBy().get(idx);
+                        if (sort == null || sort.field() == null || sort.field().isBlank()) {
+                            throw new IllegalArgumentException(
+                                    "Filter dataShapes for \"" + key + "\" has ORDER BY term with blank field at index " + idx + ".");
+                        }
+                    }
+                }
+                if (shape.groupBy() != null && shape.groupBy().stream().anyMatch(field -> field == null || field.isBlank())) {
+                    throw new IllegalArgumentException("Filter dataShapes for \"" + key + "\" contains blank GROUP BY fields.");
+                }
+                if (shape.aggregates() != null) {
+                    for (AggregateSpec aggregate : shape.aggregates()) {
+                        if (aggregate == null || isBlank(aggregate.function())) {
+                            throw new IllegalArgumentException("Filter dataShapes for \"" + key + "\" contains aggregate with blank function.");
+                        }
+                        String fn = aggregate.function().toUpperCase();
+                        if (!Set.of("COUNT", "SUM", "AVG", "MIN", "MAX").contains(fn)) {
+                            throw new IllegalArgumentException(
+                                    "Filter dataShapes for \"" + key + "\" uses unsupported aggregate \"" + aggregate.function() + "\".");
+                        }
+                        if (isBlank(aggregate.alias())) {
+                            throw new IllegalArgumentException("Filter dataShapes for \"" + key + "\" contains aggregate with blank alias.");
+                        }
+                        if (isBlank(aggregate.field())) {
+                            throw new IllegalArgumentException("Filter dataShapes for \"" + key + "\" contains aggregate with blank field.");
+                        }
+                        if (!"COUNT".equals(fn) && "*".equals(aggregate.field())) {
+                            throw new IllegalArgumentException(
+                                    "Filter dataShapes for \"" + key + "\" can use '*' only with COUNT aggregate.");
+                        }
+                    }
+                }
+                if (shape.having() != null) {
+                    validateRowFilterGroup(shape.having(), "dataShapes." + key + ".having");
+                }
+            }
+            if (!invalidShapeKeys.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "Filter dataShapes contains unknown keys: " + invalidShapeKeys +
+                                ". Use request names, custom table names, or '*' wildcard.");
             }
         }
     }

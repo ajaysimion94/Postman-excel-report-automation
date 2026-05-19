@@ -2,9 +2,13 @@ package com.automation;
 
 import com.automation.excel.ExcelReportGenerator;
 import com.automation.filter.CustomTableSpec;
+import com.automation.filter.DataShapeSpec;
 import com.automation.filter.FilterSpec;
 import com.automation.filter.RowFilterGroup;
 import com.automation.filter.RowFilterRule;
+import com.automation.filter.SortSpec;
+import com.automation.filter.AggregateSpec;
+import com.automation.http.RequestExecutor;
 import com.automation.model.ExecutionResult;
 import com.automation.model.RuntimeConfig;
 import com.automation.postman.PostmanCollection;
@@ -31,7 +35,7 @@ class ExcelReportGeneratorTest {
             new ExecutionResult("Users", "List Users", "GET", "https://example.com/users", 200, 120, true, "", "{\"ok\":true}", "{\"ok\":true}", Instant.now(), List.of("Status 2xx: PASS"))
         );
 
-        new ExcelReportGenerator().generate(collection, results, config);
+        new ExcelReportGenerator().generate(collection, results, config, new RequestExecutor());
 
         assertTrue(Files.exists(output));
         try (InputStream inputStream = Files.newInputStream(output);
@@ -60,7 +64,7 @@ class ExcelReportGeneratorTest {
                         200, 50, true, "", body, body, Instant.now(), List.of())
         );
 
-        new ExcelReportGenerator().generate(collection, results, config);
+        new ExcelReportGenerator().generate(collection, results, config, new RequestExecutor());
 
         try (InputStream is = Files.newInputStream(output);
              XSSFWorkbook wb = new XSSFWorkbook(is)) {
@@ -79,7 +83,7 @@ class ExcelReportGeneratorTest {
         CustomTableSpec table = new CustomTableSpec(
                 "My Custom Table",
                 "List Posts",
-                null, null,
+                null, null, null, null,
                 List.of("id", "title"),
                 new RowFilterGroup("AND",
                         List.of(new RowFilterRule("userId", "EQ", "1", null, null))));
@@ -94,7 +98,7 @@ class ExcelReportGeneratorTest {
                         200, 50, true, "", body, body, Instant.now(), List.of())
         );
 
-        new ExcelReportGenerator().generate(collection, results, config);
+        new ExcelReportGenerator().generate(collection, results, config, new RequestExecutor());
 
         try (InputStream is = Files.newInputStream(output);
              XSSFWorkbook wb = new XSSFWorkbook(is)) {
@@ -105,4 +109,221 @@ class ExcelReportGeneratorTest {
             assertEquals(3, sheet.getPhysicalNumberOfRows());
         }
     }
+
+        @Test
+        void shapeAppliesDistinctOrderAndLimitOffset() throws Exception {
+                Path output = Files.createTempFile("report-shape", ".xlsx");
+                FilterSpec spec = new FilterSpec(
+                                null, null, null, null, null, null,
+                                null, null, null,
+                                Map.of("List Posts", new DataShapeSpec(
+                                                true,
+                                                List.of(new SortSpec("id", true)),
+                                                2,
+                                                1
+                                ))
+                );
+                RuntimeConfig config = new RuntimeConfig(output, null, output, true, Map.of(), spec);
+                PostmanCollection collection = new PostmanCollection("Demo", Map.of(), List.of());
+
+                String body = "[{\"id\":1,\"title\":\"A\"},{\"id\":3,\"title\":\"C\"},{\"id\":2,\"title\":\"B\"},{\"id\":3,\"title\":\"C\"}]";
+                List<ExecutionResult> results = List.of(
+                                new ExecutionResult("Root", "List Posts", "GET", "https://example.com/posts",
+                                                200, 50, true, "", body, body, Instant.now(), List.of())
+                );
+
+                new ExcelReportGenerator().generate(collection, results, config, new RequestExecutor());
+
+                try (InputStream is = Files.newInputStream(output);
+                         XSSFWorkbook wb = new XSSFWorkbook(is)) {
+                        var sheet = wb.getSheet("List Posts");
+                        assertNotNull(sheet);
+                        // title + header + 2 rows after DISTINCT then ORDER DESC then OFFSET 1 LIMIT 2 -> ids [2,1]
+                        assertEquals(4, sheet.getPhysicalNumberOfRows());
+
+                        int headerRowIndex = 2;
+                        int idCol = -1;
+                        for (int i = 0; i < sheet.getRow(headerRowIndex).getLastCellNum(); i++) {
+                                if ("id".equals(sheet.getRow(headerRowIndex).getCell(i).getStringCellValue())) {
+                                        idCol = i;
+                                        break;
+                                }
+                        }
+                        assertTrue(idCol >= 0);
+
+                        assertEquals("2", sheet.getRow(3).getCell(idCol).getStringCellValue());
+                        assertEquals("1", sheet.getRow(4).getCell(idCol).getStringCellValue());
+                }
+        }
+
+            @Test
+            void shapeAppliesGroupingAggregatesAndHaving() throws Exception {
+                Path output = Files.createTempFile("report-shape-group", ".xlsx");
+                FilterSpec spec = new FilterSpec(
+                        null, null, null, null, null, null,
+                        null, null, null,
+                        Map.of("List Posts", new DataShapeSpec(
+                                false,
+                                List.of(new SortSpec("total", true)),
+                                1,
+                                0,
+                                List.of("userId"),
+                                List.of(
+                                        new AggregateSpec("COUNT", "*", "cnt"),
+                                        new AggregateSpec("SUM", "amount", "total")
+                                ),
+                                new RowFilterGroup("AND", List.of(new RowFilterRule("cnt", "GT", "1", null, null)))
+                        ))
+                );
+                RuntimeConfig config = new RuntimeConfig(output, null, output, true, Map.of(), spec);
+                PostmanCollection collection = new PostmanCollection("Demo", Map.of(), List.of());
+
+                String body = "[{\"id\":1,\"userId\":1,\"amount\":10},{\"id\":2,\"userId\":1,\"amount\":30},{\"id\":3,\"userId\":2,\"amount\":20},{\"id\":4,\"userId\":2,\"amount\":40},{\"id\":5,\"userId\":3,\"amount\":99}]";
+                List<ExecutionResult> results = List.of(
+                        new ExecutionResult("Root", "List Posts", "GET", "https://example.com/posts",
+                                200, 50, true, "", body, body, Instant.now(), List.of())
+                );
+
+                new ExcelReportGenerator().generate(collection, results, config, new RequestExecutor());
+
+                try (InputStream is = Files.newInputStream(output);
+                     XSSFWorkbook wb = new XSSFWorkbook(is)) {
+                    var sheet = wb.getSheet("List Posts");
+                    assertNotNull(sheet);
+                    // After group/having there are two groups (userId 1 and 2), then ORDER BY total DESC and LIMIT 1 -> one data row
+                    assertEquals(3, sheet.getPhysicalNumberOfRows());
+                }
+            }
+
+            @Test
+            void customTableLeftJoinKeepsUnmatchedLeftRows() throws Exception {
+                Path output = Files.createTempFile("report-left-join", ".xlsx");
+                CustomTableSpec table = new CustomTableSpec(
+                        "Orders With Users",
+                        null,
+                        List.of(
+                                new com.automation.filter.CustomTableJoinSource("List Orders", "o"),
+                                new com.automation.filter.CustomTableJoinSource("List Users", "u")
+                        ),
+                        "LEFT",
+                        List.of(new com.automation.filter.CustomTableJoinCondition("userId", "id")),
+                        null,
+                        null,
+                        List.of("o.id", "u.name"),
+                        null
+                );
+                FilterSpec spec = new FilterSpec(null, null, null, null, null, null,
+                        null, null, List.of(table), null);
+                RuntimeConfig config = new RuntimeConfig(output, null, output, true, Map.of(), spec);
+                PostmanCollection collection = new PostmanCollection("Demo", Map.of(), List.of());
+
+                String orders = "[{\"id\":100,\"userId\":1},{\"id\":101,\"userId\":999}]";
+                String users = "[{\"id\":1,\"name\":\"Jane\"}]";
+                List<ExecutionResult> results = List.of(
+                        new ExecutionResult("Root", "List Orders", "GET", "https://example.com/orders",
+                                200, 50, true, "", orders, orders, Instant.now(), List.of()),
+                        new ExecutionResult("Root", "List Users", "GET", "https://example.com/users",
+                                200, 50, true, "", users, users, Instant.now(), List.of())
+                );
+
+                new ExcelReportGenerator().generate(collection, results, config, new RequestExecutor());
+
+                try (InputStream is = Files.newInputStream(output);
+                     XSSFWorkbook wb = new XSSFWorkbook(is)) {
+                    var sheet = wb.getSheet("Orders With Users");
+                    assertNotNull(sheet);
+                    // title + header + 2 data rows (unmatched left row retained)
+                    assertEquals(4, sheet.getPhysicalNumberOfRows());
+                }
+            }
+
+            @Test
+            void customTableSupportsThreeSourceJoinChain() throws Exception {
+                Path output = Files.createTempFile("report-3way-join", ".xlsx");
+                CustomTableSpec table = new CustomTableSpec(
+                        "Orders Users Teams",
+                        null,
+                        List.of(
+                                new com.automation.filter.CustomTableJoinSource("List Orders", "o"),
+                                new com.automation.filter.CustomTableJoinSource("List Users", "u"),
+                                new com.automation.filter.CustomTableJoinSource("List Teams", "t")
+                        ),
+                        "LEFT",
+                        List.of(
+                                new com.automation.filter.CustomTableJoinCondition("userId", "id"),
+                                new com.automation.filter.CustomTableJoinCondition("teamId", "id")
+                        ),
+                        null,
+                        null,
+                        List.of("o.id", "u.name", "t.teamName"),
+                        null
+                );
+                FilterSpec spec = new FilterSpec(null, null, null, null, null, null,
+                        null, null, List.of(table), null);
+                RuntimeConfig config = new RuntimeConfig(output, null, output, true, Map.of(), spec);
+                PostmanCollection collection = new PostmanCollection("Demo", Map.of(), List.of());
+
+                String orders = "[{\"id\":100,\"userId\":1,\"teamId\":10},{\"id\":101,\"userId\":2,\"teamId\":11}]";
+                String users = "[{\"id\":1,\"name\":\"Jane\"}]";
+                String teams = "[{\"id\":10,\"teamName\":\"Core\"},{\"id\":11,\"teamName\":\"Ops\"}]";
+                List<ExecutionResult> results = List.of(
+                        new ExecutionResult("Root", "List Orders", "GET", "https://example.com/orders",
+                                200, 50, true, "", orders, orders, Instant.now(), List.of()),
+                        new ExecutionResult("Root", "List Users", "GET", "https://example.com/users",
+                                200, 50, true, "", users, users, Instant.now(), List.of()),
+                        new ExecutionResult("Root", "List Teams", "GET", "https://example.com/teams",
+                                200, 50, true, "", teams, teams, Instant.now(), List.of())
+                );
+
+                new ExcelReportGenerator().generate(collection, results, config, new RequestExecutor());
+
+                try (InputStream is = Files.newInputStream(output);
+                     XSSFWorkbook wb = new XSSFWorkbook(is)) {
+                    var sheet = wb.getSheet("Orders Users Teams");
+                    assertNotNull(sheet);
+                    // title + header + 2 data rows from chained joins
+                    assertEquals(4, sheet.getPhysicalNumberOfRows());
+                }
+            }
+
+            @Test
+            void unionAndUnionAllSheetsAreGenerated() throws Exception {
+                Path output = Files.createTempFile("report-union", ".xlsx");
+                FilterSpec spec = new FilterSpec(
+                        null, null, null, null, null, null,
+                        null, null, null,
+                        null,
+                        List.of(
+                                new com.automation.filter.UnionSpec("MergedDistinct", List.of("Req A", "Req B"), false),
+                                new com.automation.filter.UnionSpec("MergedAll", List.of("Req A", "Req B"), true)
+                        )
+                );
+
+                RuntimeConfig config = new RuntimeConfig(output, null, output, true, Map.of(), spec);
+                PostmanCollection collection = new PostmanCollection("Demo", Map.of(), List.of());
+
+                String a = "[{\"id\":1,\"name\":\"X\"},{\"id\":2,\"name\":\"Y\"}]";
+                String b = "[{\"id\":2,\"name\":\"Y\"},{\"id\":3,\"name\":\"Z\"}]";
+                List<ExecutionResult> results = List.of(
+                        new ExecutionResult("Root", "Req A", "GET", "https://example.com/a",
+                                200, 10, true, "", a, a, Instant.now(), List.of()),
+                        new ExecutionResult("Root", "Req B", "GET", "https://example.com/b",
+                                200, 10, true, "", b, b, Instant.now(), List.of())
+                );
+
+                new ExcelReportGenerator().generate(collection, results, config, new RequestExecutor());
+
+                try (InputStream is = Files.newInputStream(output);
+                     XSSFWorkbook wb = new XSSFWorkbook(is)) {
+                    var distinctSheet = wb.getSheet("MergedDistinct");
+                    var allSheet = wb.getSheet("MergedAll");
+                    assertNotNull(distinctSheet);
+                    assertNotNull(allSheet);
+
+                    // Distinct: title + header + 3 rows
+                    assertEquals(5, distinctSheet.getPhysicalNumberOfRows());
+                    // All: title + header + 4 rows
+                    assertEquals(6, allSheet.getPhysicalNumberOfRows());
+                }
+            }
 }

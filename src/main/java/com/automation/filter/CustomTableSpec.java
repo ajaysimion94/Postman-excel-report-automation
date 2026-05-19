@@ -7,7 +7,7 @@ import java.util.List;
 /**
  * Defines a custom table sheet built from one or more request responses.
  *
- * <p>There are two usage modes:
+ * <p>There are three usage modes:
  *
  * <h3>Single-source table</h3>
  * <p>Uses {@code sourceRequest} to pull rows from a single request. Applies optional
@@ -18,19 +18,12 @@ import java.util.List;
  *   "name":          "Yesterday Active Posts",
  *   "sourceRequest": "List all posts",
  *   "columns":       ["id", "title", "modifiedDate"],
- *   "where": {
- *     "logic": "AND",
- *     "rules": [
- *       { "field": "enabled",      "op": "EQ",         "value": "true"      },
- *       { "field": "modifiedDate", "op": "DATE_PRESET", "value": "YESTERDAY" }
- *     ]
- *   }
+ *   "where": { ... }
  * }
  * </pre>
  *
  * <h3>Multi-source (join) table</h3>
- * <p>Performs an inner join between two or more requests on matching key fields.
- * Column references may use {@code "alias.field"} notation when sources share field names.
+ * <p>Performs an inner join between two pre-fetched requests on matching key fields.
  *
  * <pre>
  * {
@@ -39,12 +32,31 @@ import java.util.List;
  *     { "request": "List all posts", "as": "p" },
  *     { "request": "List users",     "as": "u" }
  *   ],
+ *   "joinType": "LEFT",
  *   "joinOn":  [{ "leftField": "userId", "rightField": "id" }],
  *   "columns": ["p.id", "p.title", "u.name", "p.modifiedDate"],
+ *   "where": { ... }
+ * }
+ * </pre>
+ *
+ * <h3>Lookup (nested) table</h3>
+ * <p>For each row from {@code sourceRequest}, re-executes {@code lookupRequest} with the
+ * value of {@code lookupParam} injected as a URL/variable substitution. This is the
+ * equivalent of a SQL correlated subquery: call a detail API once per item from a list API.
+ * Fields from both sides are merged into one row; conflicting field names are prefixed with
+ * {@code "detail."}.
+ *
+ * <pre>
+ * {
+ *   "name":          "Items with Details",
+ *   "sourceRequest": "List items",
+ *   "lookupRequest": "Get item details",
+ *   "lookupParam":   "id",
+ *   "columns":       ["id", "name", "detail.description", "detail.price"],
  *   "where": {
  *     "logic": "AND",
  *     "rules": [
- *       { "field": "p.enabled", "op": "EQ", "value": "true" }
+ *       { "field": "detail.price", "op": "GT", "value": "100" }
  *     ]
  *   }
  * }
@@ -55,8 +67,8 @@ public record CustomTableSpec(
         String name,
 
         /**
-         * Single source request name. Exclusive with {@code sources}.
-         * Use this for single-request tables.
+         * Single source request name. Used for single-source and lookup tables.
+         * Exclusive with {@code sources}.
          */
         @JsonAlias("request") String sourceRequest,
 
@@ -67,21 +79,57 @@ public record CustomTableSpec(
         List<CustomTableJoinSource> sources,
 
         /**
+         * Join type for multi-source tables: INNER (default), LEFT, RIGHT, or FULL.
+         */
+        String joinType,
+
+        /**
          * Join conditions between the first and second source in {@code sources}.
          * Required when {@code sources} is provided.
          */
         List<CustomTableJoinCondition> joinOn,
 
         /**
+         * Detail request to execute once per row from {@code sourceRequest}.
+         * The value of {@code lookupParam} from each source row is injected as a variable
+         * (e.g., {@code {{id}}}) into the lookup request URL before execution.
+         * Required when {@code lookupParam} is set.
+         */
+        String lookupRequest,
+
+        /**
+         * Field name from the source row whose value is substituted into {@code lookupRequest}.
+         * For example, if set to {@code "id"}, the variable {@code {{id}}} in the lookup
+         * request URL is replaced with each row's {@code id} value.
+         * Required when {@code lookupRequest} is set.
+         */
+        String lookupParam,
+
+        /**
          * Ordered list of column names to include in the output.
          * For join tables, use {@code "alias.field"} notation to disambiguate.
+         * For lookup tables, conflicting fields from the detail response are prefixed
+         * with {@code "detail."} (e.g., {@code "detail.description"}).
          * When {@code null} or empty, all columns are included.
          */
         List<String> columns,
 
         /**
-         * Optional row filter applied after joining (or directly for single-source tables).
+         * Optional row filter applied after joining/lookup (or directly for single-source tables).
          * Uses the same {@link RowFilterGroup} rule syntax.
          */
         RowFilterGroup where
-) {}
+) {
+        public CustomTableSpec(
+                String name,
+                String sourceRequest,
+                List<CustomTableJoinSource> sources,
+                List<CustomTableJoinCondition> joinOn,
+                String lookupRequest,
+                String lookupParam,
+                List<String> columns,
+                RowFilterGroup where
+        ) {
+                this(name, sourceRequest, sources, null, joinOn, lookupRequest, lookupParam, columns, where);
+        }
+}

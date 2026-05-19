@@ -70,9 +70,18 @@ public final class RowConditionEvaluator {
      */
     public static boolean evaluate(ObjectNode row, RowFilterGroup group,
                                    Map<String, DateFieldConfig> dateConfig, Instant now) {
-        if (group == null || group.rules() == null || group.rules().isEmpty()) {
+        if (group == null) {
             return true;
         }
+
+        if (group.expression() != null) {
+            return evaluateExpression(row, group.expression(), dateConfig, now);
+        }
+
+        if (group.rules() == null || group.rules().isEmpty()) {
+            return true;
+        }
+
         boolean isAnd = group.logic() == null || !"OR".equalsIgnoreCase(group.logic());
 
         for (RowFilterRule rule : group.rules()) {
@@ -81,6 +90,25 @@ public final class RowConditionEvaluator {
             if (!isAnd && result) return true;    // OR short-circuit pass
         }
         return isAnd; // AND: all passed; OR: none passed
+    }
+
+    private static boolean evaluateExpression(ObjectNode row, RowFilterExpression expr,
+                                              Map<String, DateFieldConfig> dateConfig, Instant now) {
+        if (expr instanceof RowFilterExpression.Predicate predicate) {
+            return evaluateRule(row, predicate.rule(), dateConfig, now);
+        }
+        if (expr instanceof RowFilterExpression.And andExpr) {
+            return evaluateExpression(row, andExpr.left(), dateConfig, now)
+                    && evaluateExpression(row, andExpr.right(), dateConfig, now);
+        }
+        if (expr instanceof RowFilterExpression.Or orExpr) {
+            return evaluateExpression(row, orExpr.left(), dateConfig, now)
+                    || evaluateExpression(row, orExpr.right(), dateConfig, now);
+        }
+        if (expr instanceof RowFilterExpression.Not notExpr) {
+            return !evaluateExpression(row, notExpr.expr(), dateConfig, now);
+        }
+        return true;
     }
 
     // ── rule dispatch ─────────────────────────────────────────────────────────────

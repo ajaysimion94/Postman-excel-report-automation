@@ -81,6 +81,67 @@ class FilterValidatorTest {
     }
 
     @Test
+    void rejectsUnknownDataShapeKeys() {
+        PostmanCollection collection = sampleCollection();
+        FilterSpec filter = new FilterSpec(
+                null, null, null, null, null, null,
+                null, null, null,
+                Map.of("Unknown request", new DataShapeSpec(false, List.of(new SortSpec("id", false)), 10, 0))
+        );
+
+        assertThrows(IllegalArgumentException.class,
+                () -> FilterValidator.validate(filter, collection, Path.of("demo.json")));
+    }
+
+    @Test
+    void rejectsNegativeDataShapeLimit() {
+        PostmanCollection collection = sampleCollection();
+        FilterSpec filter = new FilterSpec(
+                null, null, null, null, null, null,
+                null, null, null,
+                Map.of("*", new DataShapeSpec(false, List.of(new SortSpec("id", false)), -1, 0))
+        );
+
+        assertThrows(IllegalArgumentException.class,
+                () -> FilterValidator.validate(filter, collection, Path.of("demo.json")));
+    }
+
+    @Test
+    void rejectsUnsupportedAggregateFunction() {
+        PostmanCollection collection = sampleCollection();
+        FilterSpec filter = new FilterSpec(
+                null, null, null, null, null, null,
+                null, null, null,
+                Map.of("*", new DataShapeSpec(
+                        false,
+                        List.of(),
+                        null,
+                        null,
+                        List.of("id"),
+                        List.of(new AggregateSpec("MEDIAN", "score", "median_score")),
+                        null
+                ))
+        );
+
+        assertThrows(IllegalArgumentException.class,
+                () -> FilterValidator.validate(filter, collection, Path.of("demo.json")));
+    }
+
+    @Test
+    void rejectsUnionWithUnknownSource() {
+        PostmanCollection collection = sampleCollection();
+        FilterSpec filter = new FilterSpec(
+                null, null, null, null, null, null,
+                null, null, null,
+                null,
+                List.of(new UnionSpec("Merged", List.of("List users", "Unknown"), false))
+        );
+
+        assertThrows(IllegalArgumentException.class,
+                () -> FilterValidator.validate(filter, collection, Path.of("demo.json")));
+    }
+
+        @Test
     void rejectsInvalidRowFilterOperator() {
         PostmanCollection collection = sampleCollection();
         RowFilterGroup group = new RowFilterGroup("AND",
@@ -150,7 +211,7 @@ class FilterValidatorTest {
     @Test
     void rejectsCustomTableMissingSource() {
         PostmanCollection collection = sampleCollection();
-        CustomTableSpec table = new CustomTableSpec("MyTable", null, null, null, null, null);
+        CustomTableSpec table = new CustomTableSpec("MyTable", null, null, null, null, null, null, null);
         FilterSpec filter = new FilterSpec(
                 null, null, null, null, null, null,
                 null, null,
@@ -166,7 +227,7 @@ class FilterValidatorTest {
                 "MyTable",
                 "List users",
                 List.of(new CustomTableJoinSource("List users", "u")),
-                null, null, null);
+                null, null, null, null, null);
         FilterSpec filter = new FilterSpec(
                 null, null, null, null, null, null,
                 null, null,
@@ -178,8 +239,8 @@ class FilterValidatorTest {
     @Test
     void rejectsDuplicateCustomTableNames() {
         PostmanCollection collection = sampleCollection();
-        CustomTableSpec t1 = new CustomTableSpec("Same", "List users", null, null, null, null);
-        CustomTableSpec t2 = new CustomTableSpec("Same", "List users", null, null, null, null);
+        CustomTableSpec t1 = new CustomTableSpec("Same", "List users", null, null, null, null, null, null);
+        CustomTableSpec t2 = new CustomTableSpec("Same", "List users", null, null, null, null, null, null);
         FilterSpec filter = new FilterSpec(
                 null, null, null, null, null, null,
                 null, null,
@@ -196,7 +257,7 @@ class FilterValidatorTest {
                 null,
                 List.of(new CustomTableJoinSource("List users", "u"),
                         new CustomTableJoinSource("Get user", "g")),
-                null, null, null);
+                null, null, null, null, null);
         FilterSpec filter = new FilterSpec(
                 null, null, null, null, null, null,
                 null, null,
@@ -212,7 +273,7 @@ class FilterValidatorTest {
                 List.of(new RowFilterRule("id", "GT", "0", null, null)));
         CustomTableSpec table = new CustomTableSpec(
                 "Active Users", "List users",
-                null, null,
+                null, null, null, null,
                 List.of("id", "name"),
                 new RowFilterGroup("AND", List.of(
                         new RowFilterRule("active", "IS_TRUE", null, null, null))));

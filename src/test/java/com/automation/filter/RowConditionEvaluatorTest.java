@@ -261,4 +261,38 @@ class RowConditionEvaluatorTest {
         RowFilterRule rangeRule = dateRule("ts", "DATE_RANGE", null, null, "2026-06-30");
         assertTrue(RowConditionEvaluator.evaluate(r, and(rangeRule), Collections.emptyMap(), now));
     }
+
+        @Test
+        void expressionTreeHonorsParenthesesAndPrecedence() {
+        ObjectNode row = row("a", "0", "b", "2", "c", "3");
+        RowFilterExpression expr = new RowFilterExpression.And(
+            new RowFilterExpression.Or(
+                new RowFilterExpression.Predicate(new RowFilterRule("a", "EQ", "1", null, null)),
+                new RowFilterExpression.Predicate(new RowFilterRule("b", "EQ", "2", null, null))
+            ),
+            new RowFilterExpression.Predicate(new RowFilterRule("c", "EQ", "3", null, null))
+        );
+        RowFilterGroup group = new RowFilterGroup(null, List.of(
+            new RowFilterRule("a", "EQ", "1", null, null),
+            new RowFilterRule("b", "EQ", "2", null, null),
+            new RowFilterRule("c", "EQ", "3", null, null)
+        ), expr);
+
+        assertTrue(RowConditionEvaluator.evaluate(row, group, Collections.emptyMap(), Instant.now()));
+        }
+
+        @Test
+        void expressionTreeSupportsNot() {
+        ObjectNode row = row("active", true);
+        RowFilterExpression expr = new RowFilterExpression.Not(
+            new RowFilterExpression.Predicate(new RowFilterRule("active", "IS_FALSE", null, null, null))
+        );
+        RowFilterGroup group = new RowFilterGroup(
+            null,
+            List.of(new RowFilterRule("active", "IS_FALSE", null, null, null)),
+            expr
+        );
+
+        assertTrue(RowConditionEvaluator.evaluate(row, group, Collections.emptyMap(), Instant.now()));
+        }
 }

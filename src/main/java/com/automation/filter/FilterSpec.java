@@ -94,5 +94,45 @@ public record FilterSpec(
          * Custom table definitions. Each entry generates a dedicated sheet with filtered,
          * joined, and projected rows derived from one or more request responses.
          */
-        List<CustomTableSpec> customTables
-) {}
+        List<CustomTableSpec> customTables,
+
+        /**
+         * Optional output shaping controls by request name/table name or wildcard {@code "*"}.
+         * Supports DISTINCT, ORDER BY, LIMIT and OFFSET semantics.
+         */
+        Map<String, DataShapeSpec> dataShapes,
+
+        /**
+         * Optional UNION/UNION ALL sheet definitions built from multiple request outputs.
+         */
+        List<UnionSpec> unions
+) {
+    public FilterSpec(
+            String collection,
+            List<String> requests,
+            Map<String, List<String>> responseColumns,
+            String outputPrefix,
+            FilterAuthSpec auth,
+            Map<String, String> vars,
+            Map<String, RowFilterGroup> rowFilters,
+            Map<String, Map<String, DateFieldConfig>> dateConfig,
+            List<CustomTableSpec> customTables
+    ) {
+        this(collection, requests, responseColumns, outputPrefix, auth, vars, rowFilters, dateConfig, customTables, null, null);
+    }
+
+    public FilterSpec(
+            String collection,
+            List<String> requests,
+            Map<String, List<String>> responseColumns,
+            String outputPrefix,
+            FilterAuthSpec auth,
+            Map<String, String> vars,
+            Map<String, RowFilterGroup> rowFilters,
+            Map<String, Map<String, DateFieldConfig>> dateConfig,
+            List<CustomTableSpec> customTables,
+            Map<String, DataShapeSpec> dataShapes
+    ) {
+        this(collection, requests, responseColumns, outputPrefix, auth, vars, rowFilters, dateConfig, customTables, dataShapes, null);
+    }
+}

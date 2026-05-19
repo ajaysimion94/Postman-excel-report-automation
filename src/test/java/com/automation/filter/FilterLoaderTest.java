@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -17,8 +18,8 @@ class FilterLoaderTest {
     @Test
     void loadsExplicitFilterByNameFromFiltersDir() throws Exception {
         Path dir = Files.createTempDirectory("filters");
-        Path filter = dir.resolve("daily.json");
-        Files.writeString(filter, "{\"requests\":[\"Ping\"]}");
+        Path filter = dir.resolve("daily.filter");
+        Files.writeString(filter, "REQUESTS \"Ping\";");
 
         FilterLoader.LoadedFilter loaded = FilterLoader.load(Path.of("daily"), dir.toString());
 
@@ -32,8 +33,8 @@ class FilterLoaderTest {
     @Test
     void autoSelectsSingleFilterWhenNoFilterArgumentProvided() throws Exception {
         Path dir = Files.createTempDirectory("filters");
-        Path filter = dir.resolve("only.json");
-        Files.writeString(filter, "{\"outputPrefix\":\"daily\"}");
+        Path filter = dir.resolve("only.filter");
+        Files.writeString(filter, "OUTPUT_PREFIX daily;");
 
         FilterLoader.LoadedFilter loaded = FilterLoader.load(null, dir.toString());
 
@@ -46,8 +47,8 @@ class FilterLoaderTest {
     @Test
     void throwsWhenMultipleFiltersExistAndNoSelectionIsProvided() throws Exception {
         Path dir = Files.createTempDirectory("filters");
-        Files.writeString(dir.resolve("a.json"), "{}");
-        Files.writeString(dir.resolve("b.json"), "{}");
+        Files.writeString(dir.resolve("a.filter"), "REQUESTS \"A\";");
+        Files.writeString(dir.resolve("b.filter"), "REQUESTS \"B\";");
 
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,
@@ -62,5 +63,36 @@ class FilterLoaderTest {
 
         Path emptyDir = Files.createTempDirectory("filters");
         assertNull(FilterLoader.load(null, emptyDir.toString()));
+    }
+
+    @Test
+    void loadsExplicitFilterFromFilterExtension() throws Exception {
+        Path dir = Files.createTempDirectory("filters");
+        Path filter = dir.resolve("daily.filter");
+        Files.writeString(filter, "REQUESTS \"Ping\";");
+
+        FilterLoader.LoadedFilter loaded = FilterLoader.load(Path.of("daily"), dir.toString());
+
+        assertNotNull(loaded);
+        assertEquals(filter.toAbsolutePath(), loaded.path());
+        assertEquals(List.of("Ping"), loaded.spec().requests());
+    }
+
+    @Test
+    void selectsCollectionBlockWhenPreferredSelectorProvided() throws Exception {
+        Path dir = Files.createTempDirectory("filters");
+        Path filter = dir.resolve("multi.filter");
+        Files.writeString(filter, """
+                COLLECTION posts;
+                REQUESTS \"List posts\";
+                COLLECTION users;
+                REQUESTS \"List users\";
+                """);
+
+        FilterLoader.LoadedFilter loaded = FilterLoader.load(Path.of("multi"), dir.toString(), "users");
+
+        assertNotNull(loaded);
+        assertEquals("users", loaded.spec().collection());
+        assertEquals(List.of("List users"), loaded.spec().requests());
     }
 }

@@ -28,7 +28,7 @@
             "header": [
               { "key": "Accept", "value": "application/json" }
             ],
-            "url": { "raw": "{{baseUrl}}/posts/1", "host": ["{{baseUrl}}"], "path": ["posts", "1"] }
+            "url": { "raw": "{{baseUrl}}/posts/{{id}}", "host": ["{{baseUrl}}"], "path": ["posts", "{{id}}"] }
           }
         },
         {
@@ -91,7 +91,7 @@
             "header": [
               { "key": "Accept", "value": "application/json" }
             ],
-            "url": { "raw": "{{baseUrl}}/users/1", "host": ["{{baseUrl}}"], "path": ["users", "1"] }
+            "url": { "raw": "{{baseUrl}}/users/{{id}}", "host": ["{{baseUrl}}"], "path": ["users", "{{id}}"] }
           }
         }
       ]

@@ -21,6 +21,9 @@ public final class CliCommand {
         boolean listCollections = false;
         boolean listFilters = false;
         Path filterPath = null;
+        boolean configMode = false;
+        ConfigAction configAction = null;
+        String configTargetUser = null;
 
         for (int index = 0; index < args.length; index++) {
             String arg = args[index];
@@ -34,6 +37,29 @@ public final class CliCommand {
                 case "--list"            -> listCollections = true;
                 case "--list-filters"    -> listFilters     = true;
                 case "--help", "-h"      -> { printUsage(); System.exit(0); }
+                case "--config" -> {
+                    configMode   = true;
+                    configAction = ConfigAction.ADD; // default — overridden by sub-flags below
+                    if (index + 1 < args.length) {
+                        switch (args[index + 1]) {
+                            case "--show" -> {
+                                configAction = ConfigAction.SHOW;
+                                index++;
+                            }
+                            case "--switch" -> {
+                                configAction   = ConfigAction.SWITCH;
+                                index++;
+                                configTargetUser = nextValue(args, ++index, "--switch");
+                            }
+                            case "--delete" -> {
+                                configAction   = ConfigAction.DELETE;
+                                index++;
+                                configTargetUser = nextValue(args, ++index, "--delete");
+                            }
+                            default -> { /* no sub-flag — stays as ADD */ }
+                        }
+                    }
+                }
                 default -> throw new IllegalArgumentException("Unknown argument: " + arg);
             }
         }
@@ -51,7 +77,8 @@ public final class CliCommand {
         // Collection can come from a selected filter in day-to-day usage.
         // Runtime validation happens in CredentialLoader when resolution is finalized.
 
-        return new CommandLineOptions(collectionPath, collectionName, envPath, outputPath, includeBody, filterPath);
+        return new CommandLineOptions(collectionPath, collectionName, envPath, outputPath, includeBody, filterPath,
+                configMode, configAction, configTargetUser);
     }
 
     private static void listAvailableCollections(Path envPath) {
@@ -94,7 +121,7 @@ public final class CliCommand {
         try {
             List<Path> filters = FilterLoader.listFilters(filtersDir);
             if (filters.isEmpty()) {
-                System.out.println("No .json filter files found in: " + filtersDir);
+                System.out.println("No .filter files found in: " + filtersDir);
                 return;
             }
             System.out.println("Filters in " + filtersDir + ":");
@@ -144,10 +171,16 @@ public final class CliCommand {
         System.out.println("  --collection <path>       Absolute path to a Postman collection JSON file");
         System.out.println("  --collection-name <name>  Collection filename to load from COLLECTIONS_DIR in .env");
         System.out.println("  --list                    List all .json collections in COLLECTIONS_DIR");
-        System.out.println("  --list-filters            List all .json filters in FILTERS_DIR");
+        System.out.println("  --list-filters            List all .filter files in FILTERS_DIR");
         System.out.println("  --env <path>              Path to .env file (default: .env)");
         System.out.println("  --output <path>           Path for the output .xlsx file");
         System.out.println("  --include-body            Include response body in the report");
-        System.out.println("  --filter <name|path>      Filter file to apply (default: auto if exactly one filter exists)");
+        System.out.println("  --filter <name|path>      Filter file to apply (.filter; auto-select if exactly one exists)");
+        System.out.println();
+        System.out.println("Credential management:");
+        System.out.println("  --config                  Add or update a credential profile (interactive)");
+        System.out.println("  --config --show           List all configured profiles");
+        System.out.println("  --config --switch <name>  Switch the active credential profile");
+        System.out.println("  --config --delete <name>  Delete a credential profile");
     }
 }

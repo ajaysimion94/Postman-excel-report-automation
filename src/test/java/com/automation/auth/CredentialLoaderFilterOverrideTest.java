@@ -32,7 +32,7 @@ class CredentialLoaderFilterOverrideTest {
                 "OUTPUT_FILE=" + root.resolve("reports/{collection}_{timestamp}.xlsx")
         ));
 
-        CommandLineOptions options = new CommandLineOptions(null, "demo", env, null, false, null);
+        CommandLineOptions options = new CommandLineOptions(null, "demo", env, null, false, null, false, null, null);
         FilterSpec filter = new FilterSpec(
                 null, null, null,
                 "daily",

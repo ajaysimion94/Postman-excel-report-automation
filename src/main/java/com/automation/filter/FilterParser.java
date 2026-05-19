@@ -1,20 +1,27 @@
 package com.automation.filter;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.Locale;
 
 public final class FilterParser {
-    private final ObjectMapper mapper = new ObjectMapper();
-
     private FilterParser() {
     }
 
     /**
-     * Parses a filter JSON file into a {@link FilterSpec}. Missing fields are null.
+     * Parses a `.filter` script into a {@link FilterSpec}.
      */
     public static FilterSpec parse(Path filterPath) throws IOException {
-        return new FilterParser().mapper.readValue(filterPath.toFile(), FilterSpec.class);
+        return parse(filterPath, null);
+    }
+
+    public static FilterSpec parse(Path filterPath, String preferredCollectionSelector) throws IOException {
+        String name = filterPath.getFileName().toString().toLowerCase(Locale.ROOT);
+        if (!name.endsWith(".filter")) {
+            throw new IllegalArgumentException(
+                    "Unsupported filter format: " + filterPath.getFileName() +
+                            ". Use .filter files only.");
+        }
+        return FilterQueryParser.parse(filterPath, preferredCollectionSelector);
     }
 }

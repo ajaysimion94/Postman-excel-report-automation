@@ -3,6 +3,7 @@ package com.automation.filter;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -20,7 +21,7 @@ public final class FilterLoader {
      * <p>Resolution order:
      * <ol>
      *   <li>If {@code filterArg} is an absolute path or an existing relative path, use it directly.</li>
-     *   <li>Otherwise, look for {@code <name>.json} in the directory given by the {@code FILTERS_DIR}
+    *   <li>Otherwise, look for {@code <name>.filter} in the directory given by the {@code FILTERS_DIR}
      *       environment / .env variable (read from the raw env map passed in).</li>
      * </ol>
      *
@@ -28,9 +29,13 @@ public final class FilterLoader {
      * @param filtersDir value of {@code FILTERS_DIR} from .env, or {@code null}
      */
     public static LoadedFilter load(Path filterArg, String filtersDir) throws IOException {
+        return load(filterArg, filtersDir, null);
+    }
+
+    public static LoadedFilter load(Path filterArg, String filtersDir, String preferredCollectionSelector) throws IOException {
         if (filterArg != null) {
             Path resolved = resolvePath(filterArg, filtersDir);
-            return new LoadedFilter(resolved.toAbsolutePath(), FilterParser.parse(resolved), false);
+            return new LoadedFilter(resolved.toAbsolutePath(), FilterParser.parse(resolved, preferredCollectionSelector), false);
         }
 
         // Default daily mode: auto-select only when there is exactly one filter file.
@@ -56,7 +61,7 @@ public final class FilterLoader {
         }
 
         Path only = candidates.get(0);
-        return new LoadedFilter(only.toAbsolutePath(), FilterParser.parse(only), true);
+        return new LoadedFilter(only.toAbsolutePath(), FilterParser.parse(only, preferredCollectionSelector), true);
     }
 
     public static List<Path> listFilters(String filtersDir) throws IOException {
@@ -75,7 +80,7 @@ public final class FilterLoader {
     private static List<Path> listFilterFiles(Path dir) throws IOException {
         try (var paths = Files.list(dir)) {
             return paths
-                    .filter(path -> path.getFileName().toString().endsWith(".json"))
+                    .filter(path -> hasSupportedExtension(path.getFileName().toString()))
                     .sorted(Comparator.comparing(path -> path.getFileName().toString().toLowerCase()))
                     .collect(Collectors.toList());
         }
@@ -95,10 +100,28 @@ public final class FilterLoader {
                     "or set FILTERS_DIR to the directory that contains your filter files.");
         }
         String name = filterArg.toString();
-        Path resolved = Path.of(filtersDir).resolve(name.endsWith(".json") ? name : name + ".json");
-        if (!Files.exists(resolved)) {
-            throw new IllegalArgumentException("Filter file not found: " + resolved.toAbsolutePath());
+        List<Path> candidates = candidatePaths(Path.of(filtersDir), name);
+        Path resolved = candidates.stream().filter(Files::exists).findFirst().orElse(null);
+        if (resolved == null) {
+            String searched = candidates.stream()
+                    .map(path -> path.toAbsolutePath().toString())
+                    .collect(Collectors.joining(", "));
+            throw new IllegalArgumentException("Filter file not found. Tried: " + searched);
         }
         return resolved;
+    }
+
+    private static boolean hasSupportedExtension(String filename) {
+        return filename.endsWith(".filter");
+    }
+
+    private static List<Path> candidatePaths(Path dir, String name) {
+        List<Path> candidates = new ArrayList<>();
+        if (name.endsWith(".filter")) {
+            candidates.add(dir.resolve(name));
+            return candidates;
+        }
+        candidates.add(dir.resolve(name + ".filter"));
+        return candidates;
     }
 }
