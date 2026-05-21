@@ -4,5 +4,5 @@ REQUESTS "List Items", "Get Item Details";
 LOOKUP_TABLE "Items With Details"
   FROM "List Items"
   LOOKUP "Get Item Details"
-  BY id
-  COLUMNS id, itemName, category, status, detail.price, detail.rating, detail.availability, detail.brand;
+  BY id AS itemid
+  COLUMNS id, name, detail.itemid, detail.name;

@@ -126,6 +126,10 @@ public final class FilterQueryParser {
             String lookupRequest = ts.readValue();
             ts.expectKeyword("BY");
             String lookupParam = ts.readIdentifierLike();
+            String lookupVar = null;
+            if (ts.matchKeyword("AS")) {
+                lookupVar = ts.readIdentifierLike();
+            }
 
             RowFilterGroup where = null;
             List<String> columns = null;
@@ -147,8 +151,10 @@ public final class FilterQueryParser {
                     sourceRequest,
                     null,
                     null,
+                    null,
                     lookupRequest,
                     lookupParam,
+                    lookupVar,
                     columns,
                     where
             ));
@@ -222,7 +228,19 @@ public final class FilterQueryParser {
             return;
         }
 
-        throw ts.error("Unknown statement. Supported: COLLECTION, OUTPUT_PREFIX, REQUESTS, REQUEST, COLUMNS, FILTER, DATE_CONFIG, LOOKUP_TABLE, SHAPE, UNION");
+        if (ts.matchKeyword("EXPAND")) {
+            String requestKey = ts.readValue();
+            ts.expectKeyword("ON");
+            String expandField = ts.readValue();
+            String exceptionPrefix = "exceptions";
+            if (ts.matchKeyword("AS")) {
+                exceptionPrefix = ts.readIdentifierLike();
+            }
+            b.expands.put(requestKey, new ExpandSpec(expandField, exceptionPrefix));
+            return;
+        }
+
+        throw ts.error("Unknown statement. Supported: COLLECTION, OUTPUT_PREFIX, REQUESTS, REQUEST, COLUMNS, FILTER, DATE_CONFIG, LOOKUP_TABLE, SHAPE, UNION, EXPAND");
     }
 
     private static List<SortSpec> parseOrderBy(TokenStream ts) {
@@ -450,6 +468,7 @@ public final class FilterQueryParser {
         private List<CustomTableSpec> customTables = new ArrayList<>();
         private Map<String, DataShapeSpec> dataShapes = new LinkedHashMap<>();
         private List<UnionSpec> unions = new ArrayList<>();
+        private Map<String, ExpandSpec> expands = new LinkedHashMap<>();
 
         private FilterSpec build() {
             return new FilterSpec(
@@ -463,7 +482,8 @@ public final class FilterQueryParser {
                     dateConfig.isEmpty() ? null : Map.copyOf(dateConfig),
                     customTables.isEmpty() ? null : List.copyOf(customTables),
                     dataShapes.isEmpty() ? null : Map.copyOf(dataShapes),
-                    unions.isEmpty() ? null : List.copyOf(unions)
+                    unions.isEmpty() ? null : List.copyOf(unions),
+                    expands.isEmpty() ? null : Map.copyOf(expands)
             );
         }
     }
@@ -548,6 +568,9 @@ public final class FilterQueryParser {
 
             out.unions = new ArrayList<>(global.unions);
             out.unions.addAll(specific.unions);
+
+            out.expands = new LinkedHashMap<>(global.expands);
+            out.expands.putAll(specific.expands);
             return out;
         }
 

@@ -98,12 +98,22 @@ public record CustomTableSpec(
         String lookupRequest,
 
         /**
-         * Field name from the source row whose value is substituted into {@code lookupRequest}.
-         * For example, if set to {@code "id"}, the variable {@code {{id}}} in the lookup
-         * request URL is replaced with each row's {@code id} value.
+         * Field name (or dot-separated JSON path) from the source row whose value is extracted
+         * for the lookup. For example, {@code "id"} reads the top-level {@code id} field;
+         * {@code "data.id"} traverses into the nested {@code data} object.
          * Required when {@code lookupRequest} is set.
          */
         String lookupParam,
+
+        /**
+         * URL variable name to inject into {@code lookupRequest} when it differs from
+         * {@code lookupParam}. If {@code null}, the injected variable name defaults to
+         * {@code lookupParam}. Use this when the source field is named differently from the
+         * placeholder in the detail request URL (e.g. source has {@code id} but the URL
+         * uses {@code {{itemid}}} — set {@code lookupParam = "id"},
+         * {@code lookupVar = "itemid"}).
+         */
+        String lookupVar,
 
         /**
          * Ordered list of column names to include in the output.
@@ -130,6 +140,6 @@ public record CustomTableSpec(
                 List<String> columns,
                 RowFilterGroup where
         ) {
-                this(name, sourceRequest, sources, null, joinOn, lookupRequest, lookupParam, columns, where);
+                this(name, sourceRequest, sources, null, joinOn, lookupRequest, lookupParam, null, columns, where);
         }
 }

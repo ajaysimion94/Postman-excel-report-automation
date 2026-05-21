@@ -10,6 +10,7 @@ import com.automation.filter.CustomTableSpec;
 import com.automation.filter.AggregateSpec;
 import com.automation.filter.DataShapeSpec;
 import com.automation.filter.DateFieldConfig;
+import com.automation.filter.ExpandSpec;
 import com.automation.filter.FilterSpec;
 import com.automation.filter.RowConditionEvaluator;
 import com.automation.filter.RowFilterGroup;
@@ -38,7 +39,6 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -47,37 +47,213 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 public final class ExcelReportGenerator {
     private static final DateTimeFormatter TIMESTAMP_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
             .withZone(ZoneId.systemDefault());
     /** Excel hard limit is 1,048,576 rows. Reserve 3 for title + blank + header. */
     private static final int MAX_DATA_ROWS = 1_048_573;
+    /** Excel hard limit for cell text content. */
+    private static final int MAX_CELL_LENGTH = 32_767;
 
-    public Path generate(PostmanCollection collection, List<ExecutionResult> results,
-                         RuntimeConfig config, RequestExecutor executor) throws IOException {
+    /** Pre-computed data for a single response-data sheet. */
+    private record SheetPayload(String requestName, String baseSheetName,
+                                List<String> keyList, List<ObjectNode> rows) {}
+
+    public List<Path> generate(PostmanCollection collection, List<ExecutionResult> results,
+                               RuntimeConfig config, RequestExecutor executor) throws IOException {
         Path outputPath = config.outputPath();
         if (outputPath.getParent() != null) {
             Files.createDirectories(outputPath.getParent());
         }
 
-        try (Workbook workbook = new XSSFWorkbook()) {
-            SheetStyleFactory styleFactory = new SheetStyleFactory();
-            createSummarySheet(workbook, styleFactory, collection, results);
-            createResultsSheet(workbook, styleFactory, results, config.includeResponseBody());
-            createFolderSheets(workbook, styleFactory, results, config.includeResponseBody());
-            Set<String> usedSheetNames = new HashSet<>();
-            createResponseDataSheets(workbook, styleFactory, results, config.filterSpec(), usedSheetNames);
-            createCustomTableSheets(workbook, styleFactory, results, config.filterSpec(), usedSheetNames,
-                    collection, config, executor);
-                createUnionSheets(workbook, styleFactory, results, config.filterSpec(), usedSheetNames);
+        // Collect and partition response data across files before opening any workbook
+        Set<String> globalSheetNames = new HashSet<>();
+        List<SheetPayload> payloads = prepareResponseSheets(results, config.filterSpec(), globalSheetNames);
+        List<List<SheetPayload>> parts = partitionPayloads(payloads);
+        if (parts.isEmpty()) parts = List.of(List.of());
 
-            try (OutputStream outputStream = Files.newOutputStream(outputPath)) {
-                workbook.write(outputStream);
+        List<Path> outputPaths = buildPartPaths(outputPath, parts.size());
+
+        for (int partIndex = 0; partIndex < parts.size(); partIndex++) {
+            List<SheetPayload> partPayloads = parts.get(partIndex);
+            Path partPath = outputPaths.get(partIndex);
+
+            try (Workbook workbook = new XSSFWorkbook()) {
+                SheetStyleFactory styleFactory = new SheetStyleFactory();
+                Set<String> partSheetNames = new HashSet<>();
+
+                if (partIndex == 0) {
+                    createSummarySheet(workbook, styleFactory, collection, results);
+                    createResultsSheet(workbook, styleFactory, results, config.includeResponseBody());
+                    createFolderSheets(workbook, styleFactory, results, config.includeResponseBody());
+                }
+
+                for (SheetPayload payload : partPayloads) {
+                    writeResponseDataSheet(workbook, styleFactory, payload, partSheetNames);
+                }
+
+                if (partIndex == 0) {
+                    createCustomTableSheets(workbook, styleFactory, results, config.filterSpec(),
+                            partSheetNames, collection, config, executor);
+                    createUnionSheets(workbook, styleFactory, results, config.filterSpec(), partSheetNames);
+                }
+
+                try (OutputStream outputStream = Files.newOutputStream(partPath)) {
+                    workbook.write(outputStream);
+                }
+            }
+
+            if (parts.size() > 1) {
+                System.out.printf("[INFO] Written part %d/%d → %s%n",
+                        partIndex + 1, parts.size(), partPath.toAbsolutePath());
             }
         }
 
-        return outputPath;
+        return outputPaths;
+    }
+
+    /**
+     * Prepares all response-data payloads (filtered, shaped, column-projected) without writing
+     * anything to disk. Each payload holds all rows for one request; very large responses that
+     * exceed {@link #MAX_DATA_ROWS} are kept intact here — partitioning is done by
+     * {@link #partitionPayloads}.
+     */
+    private List<SheetPayload> prepareResponseSheets(List<ExecutionResult> results,
+                                                     FilterSpec filterSpec,
+                                                     Set<String> usedNames) {
+        ObjectMapper mapper = new ObjectMapper();
+        List<SheetPayload> payloads = new ArrayList<>();
+
+        for (ExecutionResult result : results) {
+            String body = result.responseBody();
+            if (body == null || body.isBlank()) continue;
+
+            JsonNode root;
+            try {
+                root = mapper.readTree(body);
+            } catch (Exception e) {
+                continue;
+            }
+
+            List<ObjectNode> rows = extractResponseRows(root);
+            rows = expandRows(rows, result.requestName(), filterSpec, mapper);
+            if (rows.isEmpty()) continue;
+
+            rows = applyRowFilter(rows, result.requestName(), filterSpec);
+            rows = applyDataShape(rows, result.requestName(), filterSpec);
+
+            LinkedHashSet<String> keys = new LinkedHashSet<>();
+            for (ObjectNode row : rows) row.fieldNames().forEachRemaining(keys::add);
+            if (keys.isEmpty()) continue;
+
+            String sheetName = uniqueSheetName(safeSheetName(result.requestName()), usedNames);
+            usedNames.add(sheetName);
+
+            List<String> keyList = new ArrayList<>(keys);
+            if (filterSpec != null && filterSpec.responseColumns() != null) {
+                List<String> allowed = filterSpec.responseColumns().getOrDefault(
+                        result.requestName(),
+                        filterSpec.responseColumns().get("*"));
+                if (allowed != null) {
+                    List<String> ordered = new ArrayList<>(allowed);
+                    ordered.retainAll(keys);
+                    keyList = ordered;
+                }
+            }
+
+            payloads.add(new SheetPayload(result.requestName(), sheetName, keyList, rows));
+        }
+        return payloads;
+    }
+
+    /**
+     * Splits payloads into file groups so that no single group exceeds
+     * {@link #MAX_DATA_ROWS} rows in total. When a single payload's rows exceed
+     * {@code MAX_DATA_ROWS} it is split across multiple consecutive groups.
+     */
+    private List<List<SheetPayload>> partitionPayloads(List<SheetPayload> payloads) {
+        List<List<SheetPayload>> parts = new ArrayList<>();
+        List<SheetPayload> current = new ArrayList<>();
+        int usedRows = 0;
+
+        for (SheetPayload payload : payloads) {
+            int offset = 0;
+            int remaining = payload.rows().size();
+
+            while (remaining > 0) {
+                int available = MAX_DATA_ROWS - usedRows;
+                if (available <= 0) {
+                    parts.add(current);
+                    current = new ArrayList<>();
+                    usedRows = 0;
+                    available = MAX_DATA_ROWS;
+                }
+                int take = Math.min(available, remaining);
+                List<ObjectNode> chunk = new ArrayList<>(payload.rows().subList(offset, offset + take));
+                current.add(new SheetPayload(payload.requestName(), payload.baseSheetName(),
+                        payload.keyList(), chunk));
+                offset += take;
+                remaining -= take;
+                usedRows += take;
+            }
+        }
+        if (!current.isEmpty()) parts.add(current);
+        return parts;
+    }
+
+    /**
+     * Derives output file paths for each part. Single-part output keeps the original name;
+     * multi-part output produces {@code stem-part1.ext}, {@code stem-part2.ext}, …
+     */
+    private List<Path> buildPartPaths(Path base, int partCount) {
+        if (partCount == 1) return List.of(base);
+        String filename = base.getFileName().toString();
+        int dot = filename.lastIndexOf('.');
+        String stem = dot >= 0 ? filename.substring(0, dot) : filename;
+        String ext  = dot >= 0 ? filename.substring(dot) : "";
+        Path dir = base.getParent();
+        return IntStream.rangeClosed(1, partCount)
+                .mapToObj(i -> {
+                    String name = stem + "-part" + i + ext;
+                    return dir != null ? dir.resolve(name) : Path.of(name);
+                })
+                .collect(Collectors.toList());
+    }
+
+    /** Writes a single {@link SheetPayload} into the given workbook. */
+    private void writeResponseDataSheet(Workbook workbook, SheetStyleFactory styleFactory,
+                                        SheetPayload payload, Set<String> usedSheetNames) {
+        String sheetName = uniqueSheetName(payload.baseSheetName(), usedSheetNames);
+        usedSheetNames.add(sheetName);
+
+        Sheet sheet = workbook.createSheet(sheetName);
+        CellStyle titleStyle  = styleFactory.createTitleStyle(workbook, IndexedColors.TEAL);
+        CellStyle headerStyle = styleFactory.createHeaderStyle(workbook, IndexedColors.DARK_TEAL);
+        CellStyle textStyle   = styleFactory.createTextStyle(workbook, false);
+
+        createTitleRow(sheet, titleStyle, payload.requestName() + " — Response Data");
+
+        final int HEADER_START = 2;
+        int headerDepth = writeHierarchicalHeaders(sheet, payload.keyList(), HEADER_START, headerStyle);
+        int dataStartRow = HEADER_START + headerDepth;
+
+        int rowIndex = dataStartRow;
+        for (ObjectNode rowNode : payload.rows()) {
+            Row row = sheet.createRow(rowIndex++);
+            for (int i = 0; i < payload.keyList().size(); i++) {
+                JsonNode val = rowNode.get(payload.keyList().get(i));
+                setCell(row, i, jsonNodeToString(val), textStyle);
+            }
+        }
+
+        sheet.createFreezePane(0, dataStartRow);
+        if (!payload.keyList().isEmpty()) {
+            sheet.setAutoFilter(new CellRangeAddress(
+                    dataStartRow - 1, dataStartRow - 1, 0, payload.keyList().size() - 1));
+        }
+        autoSize(sheet, payload.keyList().size());
     }
 
     private void createSummarySheet(Workbook workbook, SheetStyleFactory styleFactory, PostmanCollection collection, List<ExecutionResult> results) {
@@ -220,7 +396,11 @@ public final class ExcelReportGenerator {
 
     private void setCell(Row row, int columnIndex, String value, CellStyle style) {
         Cell cell = row.createCell(columnIndex);
-        cell.setCellValue(value == null ? "" : value);
+        String safe = value == null ? "" : value;
+        if (safe.length() > MAX_CELL_LENGTH) {
+            safe = safe.substring(0, MAX_CELL_LENGTH);
+        }
+        cell.setCellValue(safe);
         cell.setCellStyle(style);
     }
 
@@ -232,89 +412,116 @@ public final class ExcelReportGenerator {
         }
     }
 
-    private void createResponseDataSheets(Workbook workbook, SheetStyleFactory styleFactory, List<ExecutionResult> results, FilterSpec filterSpec, Set<String> usedNames) {
-        ObjectMapper mapper = new ObjectMapper();
+    // ── hierarchical header support ───────────────────────────────────────────────
 
-        for (ExecutionResult result : results) {
-            String body = result.responseBody();
-            if (body == null || body.isBlank()) continue;
+    /**
+     * One node in the column-header tree built from dot-notation column paths.
+     * A leaf node (no children) maps to a single Excel column; an internal node
+     * groups its children under a single horizontally-merged label cell.
+     */
+    private static final class HeaderNode {
+        final String label;
+        final java.util.LinkedHashMap<String, HeaderNode> children = new java.util.LinkedHashMap<>();
+        int leafCount = 0;  // 1 for a leaf; sum of child leafCounts for internal nodes
+        int treeDepth = 0;  // 1 for a leaf; max(child.treeDepth) + 1 for internal nodes
+        HeaderNode(String label) { this.label = label; }
+        boolean isLeaf() { return children.isEmpty(); }
+    }
 
-            JsonNode root;
-            try {
-                root = mapper.readTree(body);
-            } catch (Exception e) {
-                continue;
+    /** Builds a header tree from the ordered list of dot-notation column names. */
+    private HeaderNode buildHeaderTree(List<String> columns) {
+        HeaderNode root = new HeaderNode("");
+        for (String col : columns) {
+            String[] parts = col.split("\\.", -1);
+            HeaderNode current = root;
+            for (String part : parts) {
+                current = current.children.computeIfAbsent(part, HeaderNode::new);
             }
+        }
+        computeHeaderTreeStats(root);
+        return root;
+    }
 
-            List<ObjectNode> rows = extractResponseRows(root);
-            if (rows.isEmpty()) continue;
-
-            // Apply row-level filters from filterSpec
-            rows = applyRowFilter(rows, result.requestName(), filterSpec);
-            rows = applyDataShape(rows, result.requestName(), filterSpec);
-
-            LinkedHashSet<String> keys = new LinkedHashSet<>();
-            for (ObjectNode row : rows) {
-                row.fieldNames().forEachRemaining(keys::add);
-            }
-            if (keys.isEmpty()) continue;
-
-            String sheetName = uniqueSheetName(safeSheetName(result.requestName()), usedNames);
-            usedNames.add(sheetName);
-
-            Sheet sheet = workbook.createSheet(sheetName);
-            CellStyle titleStyle = styleFactory.createTitleStyle(workbook, IndexedColors.TEAL);
-            CellStyle headerStyle = styleFactory.createHeaderStyle(workbook, IndexedColors.DARK_TEAL);
-            CellStyle textStyle = styleFactory.createTextStyle(workbook, false);
-
-            createTitleRow(sheet, titleStyle, result.requestName() + " — Response Data");
-
-            // Apply column filter from FilterSpec
-            List<String> keyList = new ArrayList<>(keys);
-            if (filterSpec != null && filterSpec.responseColumns() != null) {
-                List<String> allowed = filterSpec.responseColumns().getOrDefault(
-                        result.requestName(),
-                        filterSpec.responseColumns().get("*"));
-                if (allowed != null) {
-                    List<String> ordered = new ArrayList<>(allowed);
-                    ordered.retainAll(keys); // keep only columns that actually exist
-                    keyList = ordered;
-                }
-            }
-            Row headerRow = sheet.createRow(2);
-            for (int i = 0; i < keyList.size(); i++) {
-                Cell cell = headerRow.createCell(i);
-                cell.setCellValue(keyList.get(i));
-                cell.setCellStyle(headerStyle);
-            }
-
-            int rowIndex = 3;
-            int written = 0;
-            for (ObjectNode rowNode : rows) {
-                if (written >= MAX_DATA_ROWS) {
-                    // Write a notice row so the user knows data was capped
-                    Row notice = sheet.createRow(rowIndex);
-                    CellStyle noticeStyle = styleFactory.createStatusStyle(workbook, IndexedColors.ROSE);
-                    Cell noticeCell = notice.createCell(0);
-                    noticeCell.setCellValue(String.format(
-                            "[TRUNCATED] %,d total rows exceeded the Excel limit of %,d. Increase MAX_RESPONSE_MB or use --filter to narrow the result set.",
-                            rows.size(), MAX_DATA_ROWS));
-                    noticeCell.setCellStyle(noticeStyle);
-                    break;
-                }
-                Row row = sheet.createRow(rowIndex++);
-                for (int i = 0; i < keyList.size(); i++) {
-                    JsonNode val = rowNode.get(keyList.get(i));
-                    setCell(row, i, jsonNodeToString(val), textStyle);
-                }
-                written++;
-            }
-
-            sheet.createFreezePane(0, 3);
-            sheet.setAutoFilter(new CellRangeAddress(2, 2, 0, keyList.size() - 1));
-            autoSize(sheet, keyList.size());
+    private void computeHeaderTreeStats(HeaderNode node) {
+        if (node.isLeaf()) {
+            node.leafCount = 1;
+            node.treeDepth = 1;
+            return;
+        }
+        for (HeaderNode child : node.children.values()) {
+            computeHeaderTreeStats(child);
+            node.leafCount += child.leafCount;
+            node.treeDepth = Math.max(node.treeDepth, child.treeDepth + 1);
         }
     }
+
+    /**
+     * Writes multi-level column headers onto {@code sheet} starting at row
+     * {@code headerStartRow} and returns the number of header rows written.
+     * <p>
+     * For flat column names (no dots) exactly one row is written — identical to the
+     * previous behaviour.  For nested paths such as {@code spec.dimensions.width}
+     * parent segments appear as horizontally-merged cells, and leaves that sit above
+     * the deepest level are merged vertically downward to fill the header area:
+     * <pre>
+     *  row 0: | id ↕ | name ↕ |        spec (merged → 4 cols)          |
+     *  row 1: |      |        | weight ↕ | color ↕ | dimensions (→ 2) |
+     *  row 2: |      |        |          |         |  width  |  height |
+     * </pre>
+     */
+    private int writeHierarchicalHeaders(Sheet sheet, List<String> columns,
+                                         int headerStartRow, CellStyle style) {
+        if (columns.isEmpty()) return 1;
+        HeaderNode root = buildHeaderTree(columns);
+        // root.treeDepth counts the root itself; subtract 1 for the actual row count.
+        int headerDepth = Math.max(root.treeDepth - 1, 1);
+        renderHeaderNode(sheet, root, 0, new int[]{0}, headerStartRow, headerDepth, style);
+        return headerDepth;
+    }
+
+    /**
+     * Recursive DFS renderer for one level of {@link HeaderNode} children.
+     *
+     * @param node        current node whose children to render
+     * @param globalDepth 0-indexed depth of the children being rendered
+     * @param colCursor   single-element array acting as a mutable column counter
+     * @param headerStart 0-indexed sheet row of the first header row
+     * @param maxDepth    total number of header rows (drives vertical merge extent)
+     * @param style       cell style applied to every header cell
+     */
+    private void renderHeaderNode(Sheet sheet, HeaderNode node, int globalDepth,
+                                  int[] colCursor, int headerStart, int maxDepth,
+                                  CellStyle style) {
+        for (HeaderNode child : node.children.values()) {
+            int col    = colCursor[0];
+            int rowIdx = headerStart + globalDepth;
+            Row row = sheet.getRow(rowIdx);
+            if (row == null) row = sheet.createRow(rowIdx);
+
+            Cell cell = row.createCell(col);
+            cell.setCellValue(child.label);
+            cell.setCellStyle(style);
+
+            if (child.isLeaf()) {
+                // Merge downward to the last header row when this leaf sits above it
+                if (globalDepth < maxDepth - 1) {
+                    sheet.addMergedRegion(
+                            new CellRangeAddress(rowIdx, headerStart + maxDepth - 1, col, col));
+                }
+                colCursor[0]++;
+            } else {
+                // Merge rightward to cover all leaf descendants
+                if (child.leafCount > 1) {
+                    sheet.addMergedRegion(
+                            new CellRangeAddress(rowIdx, rowIdx, col, col + child.leafCount - 1));
+                }
+                renderHeaderNode(sheet, child, globalDepth + 1, colCursor,
+                        headerStart, maxDepth, style);
+            }
+        }
+    }
+
+
 
     // ── row filter helpers ────────────────────────────────────────────────────────
 
@@ -611,14 +818,25 @@ public final class ExcelReportGenerator {
             CellStyle textStyle   = styleFactory.createTextStyle(workbook, false);
 
             createTitleRow(sheet, titleStyle, tableSpec.name() + " — Custom Table");
-            Row headerRow = sheet.createRow(2);
-            for (int i = 0; i < keyList.size(); i++) {
-                Cell cell = headerRow.createCell(i);
-                cell.setCellValue(keyList.get(i));
-                cell.setCellStyle(headerStyle);
+            final int HEADER_START = 2;
+            int dataStartRow;
+            // Join tables use alias.field column notation (e.g. "o.id", "u.name") — dots are
+            // join-alias separators, not JSON hierarchy, so write a flat single-row header.
+            boolean isJoinTable = tableSpec.sources() != null && !tableSpec.sources().isEmpty();
+            if (isJoinTable) {
+                Row headerRow = sheet.createRow(HEADER_START);
+                for (int i = 0; i < keyList.size(); i++) {
+                    Cell cell = headerRow.createCell(i);
+                    cell.setCellValue(keyList.get(i));
+                    cell.setCellStyle(headerStyle);
+                }
+                dataStartRow = HEADER_START + 1;
+            } else {
+                int headerDepth = writeHierarchicalHeaders(sheet, keyList, HEADER_START, headerStyle);
+                dataStartRow = HEADER_START + headerDepth;
             }
 
-            int rowIndex = 3;
+            int rowIndex = dataStartRow;
             int written  = 0;
             for (ObjectNode rowNode : tableRows) {
                 if (written >= MAX_DATA_ROWS) {
@@ -641,9 +859,9 @@ public final class ExcelReportGenerator {
                 written++;
             }
 
-            sheet.createFreezePane(0, 3);
+            sheet.createFreezePane(0, dataStartRow);
             if (!keyList.isEmpty()) {
-                sheet.setAutoFilter(new CellRangeAddress(2, 2, 0, keyList.size() - 1));
+                sheet.setAutoFilter(new CellRangeAddress(dataStartRow - 1, dataStartRow - 1, 0, keyList.size() - 1));
             }
             autoSize(sheet, keyList.size());
         }
@@ -707,14 +925,11 @@ public final class ExcelReportGenerator {
             CellStyle textStyle = styleFactory.createTextStyle(workbook, false);
 
             createTitleRow(sheet, titleStyle, union.name() + " — UNION");
-            Row headerRow = sheet.createRow(2);
-            for (int i = 0; i < keyList.size(); i++) {
-                Cell cell = headerRow.createCell(i);
-                cell.setCellValue(keyList.get(i));
-                cell.setCellStyle(headerStyle);
-            }
+            final int HEADER_START = 2;
+            int headerDepth = writeHierarchicalHeaders(sheet, keyList, HEADER_START, headerStyle);
+            int dataStartRow = HEADER_START + headerDepth;
 
-            int rowIndex = 3;
+            int rowIndex = dataStartRow;
             int written = 0;
             for (ObjectNode rowNode : unionRows) {
                 if (written >= MAX_DATA_ROWS) {
@@ -728,9 +943,9 @@ public final class ExcelReportGenerator {
                 written++;
             }
 
-            sheet.createFreezePane(0, 3);
+            sheet.createFreezePane(0, dataStartRow);
             if (!keyList.isEmpty()) {
-                sheet.setAutoFilter(new CellRangeAddress(2, 2, 0, keyList.size() - 1));
+                sheet.setAutoFilter(new CellRangeAddress(dataStartRow - 1, dataStartRow - 1, 0, keyList.size() - 1));
             }
             autoSize(sheet, keyList.size());
         }
@@ -916,6 +1131,9 @@ public final class ExcelReportGenerator {
                                              ObjectMapper mapper) {
         String lookupRequestName = tableSpec.lookupRequest();
         String lookupParam       = tableSpec.lookupParam();
+        // If the detail URL uses a different variable name (e.g. {{itemid}} vs source field "id"),
+        // lookupVar holds that name; otherwise fall back to the source field name.
+        String urlVarName        = tableSpec.lookupVar() != null ? tableSpec.lookupVar() : lookupParam;
 
         RequestSpec lookupSpec = collection.requests().stream()
                 .filter(r -> r.name().equals(lookupRequestName))
@@ -943,15 +1161,16 @@ public final class ExcelReportGenerator {
                 tableSpec.name(), lookupRequestName, total);
 
         for (ObjectNode sourceRow : sourceRows) {
-            JsonNode paramNode = sourceRow.get(lookupParam);
+            JsonNode paramNode = extractNestedField(sourceRow, lookupParam);
             if (paramNode == null || paramNode.isNull()) {
                 failed++;
                 continue; // skip rows where the lookup key is absent
             }
             String paramValue = paramNode.asText();
 
-            // Inject the param value as a variable so {{lookupParam}} in the URL is resolved
-            Map<String, String> overrideVars = Map.of(lookupParam, paramValue);
+            // Inject the param value as a variable so {{urlVarName}} in the URL is resolved.
+            // urlVarName defaults to lookupParam unless BY ... AS <var> was used in the filter.
+            Map<String, String> overrideVars = Map.of(urlVarName, paramValue);
 
             ExecutionResult lookupResult = executor.executeSingle(
                     lookupSpec, baseVars, overrideVars, timeoutSeconds, maxResponseBytes);
@@ -1021,11 +1240,134 @@ public final class ExcelReportGenerator {
         return new ArrayList<>(keys);
     }
 
+    /**
+     * Extracts a value from {@code row} using a dot-separated path.
+     * {@code "id"} reads the top-level {@code id} field; {@code "data.id"} traverses
+     * the nested {@code data} object before reading {@code id}.
+     * Falls back to a flat key look-up first so that already-merged rows (whose nested
+     * fields are stored as {@code "detail.id"} strings) still resolve correctly.
+     */
+    private JsonNode extractNestedField(ObjectNode row, String path) {
+        if (path == null || path.isBlank()) return null;
+        // Fast path: field stored flat (covers both simple fields and already-prefixed ones)
+        JsonNode direct = row.get(path);
+        if (direct != null) return direct;
+        // Traverse the actual JSON tree for true nested objects
+        String[] parts = path.split("\\.", -1);
+        JsonNode current = row;
+        for (String part : parts) {
+            if (current == null || !current.isObject()) return null;
+            current = current.get(part);
+        }
+        return current;
+    }
+
+    /**
+     * Unnests a named array field within each row into individual rows — one row per
+     * array element. The parent row's scalar fields are repeated for every child row.
+     *
+     * <p>Child fields present in <em>every</em> child object are named
+     * {@code "<arrayField>.<childField>"} (e.g. {@code "items.itemid"}).
+     * Child fields that appear in only <em>some</em> child objects (sparse / schema-variant
+     * rows) are placed at the end, named {@code "<exceptionPrefix>.<childField>"}.
+     *
+     * <p>Does nothing when no {@link ExpandSpec} is configured for the request.
+     */
+    private List<ObjectNode> expandRows(List<ObjectNode> rows, String requestName,
+                                        FilterSpec spec, ObjectMapper mapper) {
+        if (spec == null || spec.expands() == null || spec.expands().isEmpty()) return rows;
+        ExpandSpec expandSpec = spec.expands().containsKey(requestName)
+                ? spec.expands().get(requestName)
+                : spec.expands().get("*");
+        if (expandSpec == null) return rows;
+
+        String arrayField  = expandSpec.field();
+        String childPrefix = arrayField;
+        String exPrefix    = expandSpec.exceptionPrefix() != null ? expandSpec.exceptionPrefix() : "exceptions";
+
+        // First pass: collect all child field names and count how many child items contain each one.
+        LinkedHashSet<String> allChildFields = new LinkedHashSet<>();
+        Map<String, Integer> fieldCounts = new LinkedHashMap<>();
+        int totalItems = 0;
+        for (ObjectNode row : rows) {
+            JsonNode arr = row.get(arrayField);
+            if (arr == null || !arr.isArray()) continue;
+            for (JsonNode item : arr) {
+                if (!item.isObject()) continue;
+                totalItems++;
+                ObjectNode flat = flattenRow((ObjectNode) item);
+                flat.fieldNames().forEachRemaining(f -> {
+                    allChildFields.add(f);
+                    fieldCounts.merge(f, 1, Integer::sum);
+                });
+            }
+        }
+
+        // Core fields: present in every child item. Sparse fields: not in every child item.
+        LinkedHashSet<String> coreFields   = new LinkedHashSet<>();
+        LinkedHashSet<String> sparseFields = new LinkedHashSet<>();
+        for (String f : allChildFields) {
+            if (totalItems > 0 && fieldCounts.getOrDefault(f, 0) == totalItems) {
+                coreFields.add(f);
+            } else {
+                sparseFields.add(f);
+            }
+        }
+
+        // Second pass: build the expanded row list.
+        List<ObjectNode> expanded = new ArrayList<>();
+        for (ObjectNode row : rows) {
+            JsonNode arr = row.get(arrayField);
+            if (arr == null || !arr.isArray()) {
+                // No array value — keep parent row and add empty child columns so headers are uniform.
+                ObjectNode copy = mapper.createObjectNode();
+                addParentFields(row, arrayField, copy);
+                for (String f : coreFields)   copy.putNull(childPrefix + "." + f);
+                for (String f : sparseFields)  copy.putNull(exPrefix    + "." + f);
+                expanded.add(copy);
+                continue;
+            }
+            boolean hadItems = false;
+            for (JsonNode item : arr) {
+                if (!item.isObject()) continue;
+                hadItems = true;
+                ObjectNode flat   = flattenRow((ObjectNode) item);
+                ObjectNode newRow = mapper.createObjectNode();
+                addParentFields(row, arrayField, newRow);
+                for (String f : coreFields) {
+                    JsonNode v = flat.get(f);
+                    newRow.set(childPrefix + "." + f, v != null ? v : mapper.nullNode());
+                }
+                for (String f : sparseFields) {
+                    JsonNode v = flat.get(f);
+                    newRow.set(exPrefix + "." + f, v != null ? v : mapper.nullNode());
+                }
+                expanded.add(newRow);
+            }
+            if (!hadItems) {
+                // Empty array — keep parent row with empty child columns.
+                ObjectNode copy = mapper.createObjectNode();
+                addParentFields(row, arrayField, copy);
+                for (String f : coreFields)   copy.putNull(childPrefix + "." + f);
+                for (String f : sparseFields)  copy.putNull(exPrefix    + "." + f);
+                expanded.add(copy);
+            }
+        }
+        return expanded;
+    }
+
+    /** Copies all fields from {@code source} into {@code target}, skipping {@code excludeField}. */
+    private static void addParentFields(ObjectNode source, String excludeField, ObjectNode target) {
+        source.fieldNames().forEachRemaining(f -> {
+            if (!f.equals(excludeField)) target.set(f, source.get(f));
+        });
+    }
+
     private List<ObjectNode> extractResponseRows(JsonNode root) {
         if (root.isArray()) {
             List<ObjectNode> list = new ArrayList<>();
             for (JsonNode item : root) {
-                if (item.isObject()) list.add((ObjectNode) item);
+                if (item.isObject()) list.add(flattenRow((ObjectNode) item));
             }
             return list;
         }
@@ -1036,14 +1378,40 @@ public final class ExcelReportGenerator {
                 if (val.isArray()) {
                     List<ObjectNode> list = new ArrayList<>();
                     for (JsonNode item : val) {
-                        if (item.isObject()) list.add((ObjectNode) item);
+                        if (item.isObject()) list.add(flattenRow((ObjectNode) item));
                     }
                     if (!list.isEmpty()) return list;
                 }
             }
-            return List.of((ObjectNode) root);
+            return List.of(flattenRow((ObjectNode) root));
         }
         return List.of();
+    }
+
+    /**
+     * Recursively flattens a JSON object into a single-level {@link ObjectNode} using
+     * dot-notation keys. Nested objects are expanded: {@code {"a":{"b":1}}} becomes
+     * {@code {"a.b": 1}}. Arrays are kept as-is (they appear as JSON strings in Excel
+     * cells via {@link #jsonNodeToString}).
+     */
+    private ObjectNode flattenRow(ObjectNode row) {
+        ObjectNode flat = row.objectNode(); // same node factory as the source
+        flattenInto("", row, flat);
+        return flat;
+    }
+
+    private void flattenInto(String prefix, JsonNode node, ObjectNode target) {
+        if (node.isObject()) {
+            Iterator<Map.Entry<String, JsonNode>> fields = node.fields();
+            while (fields.hasNext()) {
+                Map.Entry<String, JsonNode> entry = fields.next();
+                String key = prefix.isEmpty() ? entry.getKey() : prefix + "." + entry.getKey();
+                flattenInto(key, entry.getValue(), target);
+            }
+        } else {
+            // Scalar, null, or array — store directly; arrays render as JSON strings via jsonNodeToString
+            target.set(prefix, node);
+        }
     }
 
     private String jsonNodeToString(JsonNode node) {

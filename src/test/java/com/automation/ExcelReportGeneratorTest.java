@@ -8,6 +8,7 @@ import com.automation.filter.RowFilterGroup;
 import com.automation.filter.RowFilterRule;
 import com.automation.filter.SortSpec;
 import com.automation.filter.AggregateSpec;
+import com.automation.filter.ExpandSpec;
 import com.automation.http.RequestExecutor;
 import com.automation.model.ExecutionResult;
 import com.automation.model.RuntimeConfig;
@@ -25,6 +26,81 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ExcelReportGeneratorTest {
+
+    @Test
+    void expandUnnestsNestedArrayIntoRows() throws Exception {
+        Path output = Files.createTempFile("report-expand", ".xlsx");
+        FilterSpec spec = new FilterSpec(null, null, null, null, null, null,
+                null, null, null, null, null,
+                Map.of("Category List", new ExpandSpec("items")));
+        RuntimeConfig config = new RuntimeConfig(output, null, output, true, Map.of(), spec);
+        PostmanCollection collection = new PostmanCollection("Demo", Map.of(), List.of());
+
+        // Wrapped response: top-level object with a "category list" array.
+        // Each category row has an "items" array to expand.
+        String body = "{\"category list\":[" +
+                "{\"category\":\"fruits\",\"items\":[{\"itemid\":1,\"name\":\"apple\",\"price\":20},{\"itemid\":2,\"name\":\"orange\",\"price\":10}]}," +
+                "{\"category\":\"veg\",\"items\":[{\"itemid\":1,\"name\":\"carrot\",\"price\":5},{\"itemid\":2,\"name\":\"tomato\",\"price\":10}]}" +
+                "]}";
+        List<ExecutionResult> results = List.of(
+                new ExecutionResult("Root", "Category List", "GET", "https://example.com/categories",
+                        200, 50, true, "", body, body, Instant.now(), List.of())
+        );
+
+        new ExcelReportGenerator().generate(collection, results, config, new RequestExecutor());
+
+        try (InputStream is = Files.newInputStream(output);
+             XSSFWorkbook wb = new XSSFWorkbook(is)) {
+            var sheet = wb.getSheet("Category List");
+            assertNotNull(sheet, "Response data sheet for Category List should exist");
+            // title row + 2 header rows (hierarchical: parent group + leaf) + 4 data rows (2 fruits + 2 veg)
+            assertEquals(7, sheet.getPhysicalNumberOfRows(),
+                    "Sheet should have title + 2 header rows + 4 expanded item rows");
+        }
+    }
+
+    @Test
+    void expandWithSparseChildFieldsPutsExtrasInExceptionColumns() throws Exception {
+        Path output = Files.createTempFile("report-expand-sparse", ".xlsx");
+        FilterSpec spec = new FilterSpec(null, null, null, null, null, null,
+                null, null, null, null, null,
+                Map.of("Products", new ExpandSpec("variants", "extra")));
+        RuntimeConfig config = new RuntimeConfig(output, null, output, true, Map.of(), spec);
+        PostmanCollection collection = new PostmanCollection("Demo", Map.of(), List.of());
+
+        // Second variant has an extra field "organic" not in the first — should go to extra.organic
+        String body = "[{\"product\":\"A\",\"variants\":[" +
+                "{\"sku\":\"A1\",\"price\":10}," +
+                "{\"sku\":\"A2\",\"price\":20,\"organic\":true}" +
+                "]}]";
+        List<ExecutionResult> results = List.of(
+                new ExecutionResult("Root", "Products", "GET", "https://example.com/products",
+                        200, 50, true, "", body, body, Instant.now(), List.of())
+        );
+
+        new ExcelReportGenerator().generate(collection, results, config, new RequestExecutor());
+
+        try (InputStream is = Files.newInputStream(output);
+             XSSFWorkbook wb = new XSSFWorkbook(is)) {
+            var sheet = wb.getSheet("Products");
+            assertNotNull(sheet);
+            // title + 2 header rows (hierarchical) + 2 data rows
+            assertEquals(5, sheet.getPhysicalNumberOfRows());
+            // The leaf header row (index 3) should contain the sparse column leaf label "organic"
+            // (the parent group label "extra" is rendered in the parent header row at index 2).
+            int headerRowIndex = 3;
+            org.apache.poi.ss.usermodel.Row headerRow = sheet.getRow(headerRowIndex);
+            boolean foundSparseColumn = false;
+            for (int i = 0; i < headerRow.getLastCellNum(); i++) {
+                org.apache.poi.ss.usermodel.Cell cell = headerRow.getCell(i);
+                if (cell != null && "organic".equals(cell.getStringCellValue())) {
+                    foundSparseColumn = true;
+                    break;
+                }
+            }
+            assertTrue(foundSparseColumn, "Sparse leaf column 'organic' should appear in the leaf header row");
+        }
+    }
 
     @Test
     void generatesWorkbookWithStyledSheets() throws Exception {
@@ -209,6 +285,7 @@ class ExcelReportGeneratorTest {
                         List.of(new com.automation.filter.CustomTableJoinCondition("userId", "id")),
                         null,
                         null,
+                        null,
                         List.of("o.id", "u.name"),
                         null
                 );
@@ -253,6 +330,7 @@ class ExcelReportGeneratorTest {
                                 new com.automation.filter.CustomTableJoinCondition("userId", "id"),
                                 new com.automation.filter.CustomTableJoinCondition("teamId", "id")
                         ),
+                        null,
                         null,
                         null,
                         List.of("o.id", "u.name", "t.teamName"),

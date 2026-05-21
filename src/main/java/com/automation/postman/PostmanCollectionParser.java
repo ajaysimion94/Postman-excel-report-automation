@@ -8,9 +8,9 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 public final class PostmanCollectionParser {
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -48,11 +48,19 @@ public final class PostmanCollectionParser {
 
     private RequestSpec parseRequest(JsonNode itemNode, List<String> folderStack, AuthDefinition auth) {
         JsonNode requestNode = itemNode.path("request");
-        String url = parseUrl(requestNode.path("url"));
+        RequestUrlSpec urlSpec = parseUrlSpec(requestNode.path("url"));
+        String url = renderUrl(urlSpec);
         List<RequestHeader> headers = parseHeaders(requestNode.path("header"));
-        String body = parseBody(requestNode.path("body"));
+        RequestBodySpec bodySpec = parseBodySpec(requestNode.path("body"));
+        String body = renderBody(bodySpec);
         AuthDefinition requestAuth = parseAuth(requestNode.path("auth"));
         AuthDefinition effectiveAuth = requestAuth == null ? auth : requestAuth;
+        String description = firstNonBlank(
+                parseDescription(requestNode.path("description")),
+                parseDescription(itemNode.path("description"))
+        );
+        boolean disabled = itemNode.path("disabled").asBoolean(false);
+        RequestSettings settings = parseRequestSettings(itemNode, requestNode);
 
         return new RequestSpec(
                 String.join(" / ", folderStack),
@@ -61,41 +69,57 @@ public final class PostmanCollectionParser {
                 url,
                 headers,
                 body,
-                effectiveAuth
+                effectiveAuth,
+                description,
+                disabled,
+                urlSpec,
+                bodySpec,
+                settings
         );
     }
 
-    private String parseUrl(JsonNode urlNode) {
+    private RequestUrlSpec parseUrlSpec(JsonNode urlNode) {
         if (urlNode.isTextual()) {
-            return urlNode.asText();
+            return new RequestUrlSpec(urlNode.asText(), "", List.of(), List.of(), List.of());
         }
 
-        String raw = urlNode.path("raw").asText();
+        String raw = urlNode.path("raw").asText("");
+        String protocol = urlNode.path("protocol").asText("");
+        List<String> host = readTextArray(urlNode.path("host"));
+        List<String> path = readTextArray(urlNode.path("path"));
+        List<RequestQueryParam> query = parseQueryParams(urlNode.path("query"));
+
+        return new RequestUrlSpec(raw, protocol, host, path, query);
+    }
+
+    private String renderUrl(RequestUrlSpec urlSpec) {
+        if (urlSpec == null) {
+            return "";
+        }
+
+        String raw = defaultString(urlSpec.raw());
         String base;
         if (!raw.isBlank()) {
             base = raw;
-        } else if (urlNode.has("host")) {
-            String protocol = urlNode.path("protocol").asText("https");
-            String host = joinTextArray(urlNode.path("host"), ".");
-            String path = joinTextArray(urlNode.path("path"), "/");
+        } else if (!urlSpec.host().isEmpty()) {
+            String protocol = urlSpec.protocol() == null || urlSpec.protocol().isBlank() ? "https" : urlSpec.protocol();
+            String host = String.join(".", urlSpec.host());
+            String path = String.join("/", urlSpec.path());
             base = path.isBlank() ? protocol + "://" + host : protocol + "://" + host + "/" + path;
         } else {
             base = "";
         }
 
-        // Append any query params from the structured query array that are not already in the raw URL
-        JsonNode queryArray = urlNode.path("query");
-        if (queryArray.isArray()) {
+        if (!urlSpec.query().isEmpty()) {
             List<String> params = new ArrayList<>();
-            for (JsonNode q : queryArray) {
-                if (q.path("disabled").asBoolean(false)) {
+            for (RequestQueryParam queryParam : urlSpec.query()) {
+                if (queryParam.disabled()) {
                     continue;
                 }
-                String key   = q.path("key").asText("");
-                String value = q.path("value").asText("");
+                String key = defaultString(queryParam.key());
+                String value = defaultString(queryParam.value());
                 if (!key.isBlank()) {
                     String pair = key + "=" + value;
-                    // Only append if not already present in the raw string
                     if (!base.contains(key + "=")) {
                         params.add(pair);
                     }
@@ -110,22 +134,79 @@ public final class PostmanCollectionParser {
         return base;
     }
 
-    private String parseBody(JsonNode bodyNode) {
-        String mode = bodyNode.path("mode").asText();
+    private RequestBodySpec parseBodySpec(JsonNode bodyNode) {
+        if (bodyNode == null || bodyNode.isMissingNode() || bodyNode.isNull() || bodyNode.isEmpty()) {
+            return null;
+        }
+
+        String mode = bodyNode.path("mode").asText("");
         switch (mode.toLowerCase()) {
             case "raw" -> {
-                return bodyNode.path("raw").asText(null);
+                return new RequestBodySpec(mode, bodyNode.path("raw").asText(null), List.of(), List.of(), null, null, null);
             }
             case "urlencoded" -> {
-                JsonNode fields = bodyNode.path("urlencoded");
-                if (!fields.isArray()) return null;
+                return new RequestBodySpec(
+                        mode,
+                        null,
+                        parseBodyFields(bodyNode.path("urlencoded")),
+                        List.of(),
+                        null,
+                        null,
+                        null
+                );
+            }
+            case "formdata" -> {
+                return new RequestBodySpec(
+                        mode,
+                        null,
+                        List.of(),
+                        parseBodyFields(bodyNode.path("formdata")),
+                        null,
+                        null,
+                        null
+                );
+            }
+            case "file", "binary" -> {
+                JsonNode fileNode = bodyNode.path(mode);
+                return new RequestBodySpec(mode, null, List.of(), List.of(), readStringValue(fileNode.path("src")), null, null);
+            }
+            case "graphql" -> {
+                JsonNode graphQlNode = bodyNode.path("graphql");
+                return new RequestBodySpec(
+                        mode,
+                        null,
+                        List.of(),
+                        List.of(),
+                        null,
+                        graphQlNode.path("query").asText(null),
+                        graphQlNode.path("variables").asText(null)
+                );
+            }
+            default -> {
+                return new RequestBodySpec(mode, null, List.of(), List.of(), null, null, null);
+            }
+        }
+    }
+
+    private String renderBody(RequestBodySpec bodySpec) {
+        if (bodySpec == null || bodySpec.mode() == null) {
+            return null;
+        }
+
+        switch (bodySpec.mode().toLowerCase()) {
+            case "raw" -> {
+                return bodySpec.raw();
+            }
+            case "urlencoded" -> {
                 List<String> pairs = new ArrayList<>();
-                for (JsonNode field : fields) {
-                    if (field.path("disabled").asBoolean(false)) continue;
-                    String key   = field.path("key").asText("");
-                    String value = field.path("value").asText("");
+                for (RequestBodyField field : bodySpec.urlEncoded()) {
+                    if (field.disabled()) {
+                        continue;
+                    }
+                    String key = defaultString(field.key());
+                    String value = defaultString(field.value());
                     if (!key.isBlank()) {
-                        pairs.add(java.net.URLEncoder.encode(key,   java.nio.charset.StandardCharsets.UTF_8)
+                        pairs.add(java.net.URLEncoder.encode(key, java.nio.charset.StandardCharsets.UTF_8)
                                 + "=" +
                                 java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8));
                     }
@@ -133,25 +214,29 @@ public final class PostmanCollectionParser {
                 return pairs.isEmpty() ? null : String.join("&", pairs);
             }
             case "formdata" -> {
-                // Multipart formdata: build a simple JSON representation so data is not silently lost.
-                // True multipart/form-data sending is not supported; this preserves the field values.
-                JsonNode fields = bodyNode.path("formdata");
-                if (!fields.isArray()) return null;
                 List<String> parts = new ArrayList<>();
-                for (JsonNode field : fields) {
-                    if (field.path("disabled").asBoolean(false)) continue;
-                    String key   = field.path("key").asText("");
-                    String value = field.path("value").asText("");
+                for (RequestBodyField field : bodySpec.formData()) {
+                    if (field.disabled()) {
+                        continue;
+                    }
+                    String key = defaultString(field.key());
+                    String value = "file".equalsIgnoreCase(defaultString(field.type()))
+                            ? defaultString(field.source())
+                            : defaultString(field.value());
                     if (!key.isBlank()) {
                         parts.add("\"" + key + "\": \"" + value + "\"");
                     }
                 }
-                if (parts.isEmpty()) return null;
+                if (parts.isEmpty()) {
+                    return null;
+                }
                 System.err.println("[WARN] Request body mode is 'formdata'. Multipart sending is not supported; "
                         + "fields are included as JSON for visibility.");
                 return "{" + String.join(", ", parts) + "}";
             }
-            default -> { return null; }
+            default -> {
+                return null;
+            }
         }
     }
 
@@ -171,6 +256,41 @@ public final class PostmanCollectionParser {
             ));
         }
         return List.copyOf(headers);
+    }
+
+    private List<RequestQueryParam> parseQueryParams(JsonNode queryNode) {
+        if (!queryNode.isArray()) {
+            return List.of();
+        }
+
+        List<RequestQueryParam> params = new ArrayList<>();
+        for (JsonNode queryParamNode : queryNode) {
+            params.add(new RequestQueryParam(
+                    queryParamNode.path("key").asText(null),
+                    queryParamNode.path("value").asText(""),
+                    queryParamNode.path("disabled").asBoolean(false)
+            ));
+        }
+        return List.copyOf(params);
+    }
+
+    private List<RequestBodyField> parseBodyFields(JsonNode fieldsNode) {
+        if (!fieldsNode.isArray()) {
+            return List.of();
+        }
+
+        List<RequestBodyField> fields = new ArrayList<>();
+        for (JsonNode fieldNode : fieldsNode) {
+            fields.add(new RequestBodyField(
+                    fieldNode.path("key").asText(null),
+                    fieldNode.path("value").asText(null),
+                    fieldNode.path("type").asText("text"),
+                    readStringValue(fieldNode.path("src")),
+                    fieldNode.path("disabled").asBoolean(false),
+                    fieldNode.path("contentType").asText(null)
+            ));
+        }
+        return List.copyOf(fields);
     }
 
     private AuthDefinition parseAuth(JsonNode authNode) {
@@ -194,6 +314,29 @@ public final class PostmanCollectionParser {
         return new AuthDefinition(type, Map.copyOf(values));
     }
 
+    private RequestSettings parseRequestSettings(JsonNode itemNode, JsonNode requestNode) {
+        JsonNode profileNode = requestNode.path("protocolProfileBehavior");
+        if (profileNode.isMissingNode() || profileNode.isNull() || profileNode.isEmpty()) {
+            profileNode = itemNode.path("protocolProfileBehavior");
+        }
+
+        Integer timeoutMillis = parseIntegerNode(requestNode.path("timeout"));
+        Boolean followRedirects = parseBooleanNode(profileNode.path("followRedirects"));
+        Boolean disableUrlEncoding = parseBooleanNode(profileNode.path("disableUrlEncoding"));
+        Boolean strictSsl = parseBooleanNode(profileNode.path("strictSSL"));
+        Map<String, String> protocolProfile = parseScalarMap(profileNode);
+
+        if (timeoutMillis == null
+                && followRedirects == null
+                && disableUrlEncoding == null
+                && strictSsl == null
+                && protocolProfile.isEmpty()) {
+            return null;
+        }
+
+        return new RequestSettings(timeoutMillis, followRedirects, disableUrlEncoding, strictSsl, protocolProfile);
+    }
+
     private Map<String, String> parseVariables(JsonNode variableNode) {
         if (!variableNode.isArray()) {
             return Map.of();
@@ -209,9 +352,106 @@ public final class PostmanCollectionParser {
         return variables;
     }
 
-    private String joinTextArray(JsonNode arrayNode, String separator) {
+    private Map<String, String> parseScalarMap(JsonNode objectNode) {
+        if (objectNode == null || !objectNode.isObject()) {
+            return Map.of();
+        }
+
+        Map<String, String> values = new LinkedHashMap<>();
+        Iterator<Map.Entry<String, JsonNode>> fields = objectNode.fields();
+        while (fields.hasNext()) {
+            Map.Entry<String, JsonNode> entry = fields.next();
+            JsonNode valueNode = entry.getValue();
+            if (valueNode == null || valueNode.isMissingNode() || valueNode.isNull()) {
+                continue;
+            }
+            if (valueNode.isValueNode()) {
+                values.put(entry.getKey(), valueNode.asText());
+            }
+        }
+        return Map.copyOf(values);
+    }
+
+    private Boolean parseBooleanNode(JsonNode valueNode) {
+        if (valueNode == null || valueNode.isMissingNode() || valueNode.isNull()) {
+            return null;
+        }
+        if (valueNode.isBoolean()) {
+            return valueNode.asBoolean();
+        }
+        if (valueNode.isTextual()) {
+            String text = valueNode.asText().trim();
+            if ("true".equalsIgnoreCase(text)) {
+                return Boolean.TRUE;
+            }
+            if ("false".equalsIgnoreCase(text)) {
+                return Boolean.FALSE;
+            }
+        }
+        return null;
+    }
+
+    private Integer parseIntegerNode(JsonNode valueNode) {
+        if (valueNode == null || valueNode.isMissingNode() || valueNode.isNull()) {
+            return null;
+        }
+        if (valueNode.canConvertToInt()) {
+            return valueNode.asInt();
+        }
+        if (valueNode.isTextual()) {
+            try {
+                return Integer.parseInt(valueNode.asText().trim());
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private String parseDescription(JsonNode descriptionNode) {
+        if (descriptionNode == null || descriptionNode.isMissingNode() || descriptionNode.isNull()) {
+            return null;
+        }
+        if (descriptionNode.isTextual()) {
+            String text = descriptionNode.asText().trim();
+            return text.isEmpty() ? null : text;
+        }
+        if (descriptionNode.isObject()) {
+            String content = descriptionNode.path("content").asText("").trim();
+            return content.isEmpty() ? null : content;
+        }
+        return null;
+    }
+
+    private String readStringValue(JsonNode valueNode) {
+        if (valueNode == null || valueNode.isMissingNode() || valueNode.isNull()) {
+            return null;
+        }
+        if (valueNode.isArray()) {
+            List<String> values = readTextArray(valueNode);
+            return values.isEmpty() ? null : values.get(0);
+        }
+        String text = valueNode.asText("");
+        return text.isEmpty() ? null : text;
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private String defaultString(String value) {
+        return value == null ? "" : value;
+    }
+
+    private List<String> readTextArray(JsonNode arrayNode) {
         if (!arrayNode.isArray()) {
-            return arrayNode.asText("");
+            String singleValue = arrayNode.asText("");
+            return singleValue.isBlank() ? List.of() : List.of(singleValue);
         }
 
         List<String> values = new ArrayList<>();
@@ -219,6 +459,6 @@ public final class PostmanCollectionParser {
         while (iterator.hasNext()) {
             values.add(iterator.next().asText());
         }
-        return values.stream().collect(Collectors.joining(separator));
+        return List.copyOf(values);
     }
 }

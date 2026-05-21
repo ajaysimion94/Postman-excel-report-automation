@@ -12,6 +12,7 @@ import com.automation.http.RequestExecutor;
 import com.automation.model.ExecutionResult;
 import com.automation.model.RuntimeConfig;
 import com.automation.postman.PostmanCollection;
+import com.automation.postman.PostmanCompatibilityValidator;
 import com.automation.postman.PostmanCollectionParser;
 import com.automation.postman.RequestSpec;
 
@@ -49,10 +50,19 @@ public final class Main {
             System.out.println(mode + " filter: " + loadedFilter.path().getFileName());
         }
 
+        PostmanCompatibilityValidator.validate(collection);
+
         List<ExecutionResult> results = new RequestExecutor(config.variables()).execute(collection, config);
         RequestExecutor executor = new RequestExecutor(config.variables());
-        Path outputPath = new ExcelReportGenerator().generate(collection, results, config, executor);
-        System.out.println("Excel report written to: " + outputPath.toAbsolutePath());
+        List<Path> outputPaths = new ExcelReportGenerator().generate(collection, results, config, executor);
+        if (outputPaths.size() == 1) {
+            System.out.println("Excel report written to: " + outputPaths.get(0).toAbsolutePath());
+        } else {
+            System.out.println("Excel report split into " + outputPaths.size() + " files:");
+            for (Path p : outputPaths) {
+                System.out.println("  " + p.toAbsolutePath());
+            }
+        }
     }
 
     /** Applies the request whitelist from the filter; returns a new collection with only matching requests. */

@@ -371,6 +371,31 @@ public final class FilterValidator {
                                 ". Use request names, custom table names, or '*' wildcard.");
             }
         }
+
+        // Validate expands
+        if (filter.expands() != null && !filter.expands().isEmpty()) {
+            List<String> invalidExpandKeys = new ArrayList<>();
+            for (Map.Entry<String, com.automation.filter.ExpandSpec> entry : filter.expands().entrySet()) {
+                String key = entry.getKey();
+                if (key == null || key.isBlank()) {
+                    invalidExpandKeys.add("<blank>");
+                    continue;
+                }
+                if (!"*".equals(key) && !available.contains(key)) {
+                    invalidExpandKeys.add(key);
+                }
+                com.automation.filter.ExpandSpec expandSpec = entry.getValue();
+                if (expandSpec == null || expandSpec.field() == null || expandSpec.field().isBlank()) {
+                    throw new IllegalArgumentException(
+                            "Filter expands entry for \"" + key + "\" must specify a non-blank field name.");
+                }
+            }
+            if (!invalidExpandKeys.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "Filter expands contains unknown request keys: " + invalidExpandKeys +
+                        ". Use request names from the collection or '*' wildcard.");
+            }
+        }
     }
 
     private static void validateRowFilterGroup(RowFilterGroup group, String location) {

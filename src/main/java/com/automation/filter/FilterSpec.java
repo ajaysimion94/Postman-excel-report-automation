@@ -105,7 +105,13 @@ public record FilterSpec(
         /**
          * Optional UNION/UNION ALL sheet definitions built from multiple request outputs.
          */
-        List<UnionSpec> unions
+        List<UnionSpec> unions,
+
+        /**
+         * Optional array-expansion specs, keyed by request name or {@code "*"} wildcard.
+         * Each entry tells the generator to unnest a named array field into individual rows.
+         */
+        Map<String, ExpandSpec> expands
 ) {
     public FilterSpec(
             String collection,
@@ -118,7 +124,7 @@ public record FilterSpec(
             Map<String, Map<String, DateFieldConfig>> dateConfig,
             List<CustomTableSpec> customTables
     ) {
-        this(collection, requests, responseColumns, outputPrefix, auth, vars, rowFilters, dateConfig, customTables, null, null);
+        this(collection, requests, responseColumns, outputPrefix, auth, vars, rowFilters, dateConfig, customTables, null, null, null);
     }
 
     public FilterSpec(
@@ -133,6 +139,22 @@ public record FilterSpec(
             List<CustomTableSpec> customTables,
             Map<String, DataShapeSpec> dataShapes
     ) {
-        this(collection, requests, responseColumns, outputPrefix, auth, vars, rowFilters, dateConfig, customTables, dataShapes, null);
+        this(collection, requests, responseColumns, outputPrefix, auth, vars, rowFilters, dateConfig, customTables, dataShapes, null, null);
+    }
+
+    public FilterSpec(
+            String collection,
+            List<String> requests,
+            Map<String, List<String>> responseColumns,
+            String outputPrefix,
+            FilterAuthSpec auth,
+            Map<String, String> vars,
+            Map<String, RowFilterGroup> rowFilters,
+            Map<String, Map<String, DateFieldConfig>> dateConfig,
+            List<CustomTableSpec> customTables,
+            Map<String, DataShapeSpec> dataShapes,
+            List<UnionSpec> unions
+    ) {
+        this(collection, requests, responseColumns, outputPrefix, auth, vars, rowFilters, dateConfig, customTables, dataShapes, unions, null);
     }
 }

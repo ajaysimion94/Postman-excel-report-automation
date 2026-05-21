@@ -53,7 +53,8 @@ FILTER "List posts" WHERE (status = active OR priority = high) AND NOT archived 
 | Value and text operators | `IS`, `NULL`, `TRUE`, `FALSE`, `IN`, `LIKE`, `ILIKE`, `CONTAINS`, `NOT_CONTAINS`, `STARTS_WITH`, `ENDS_WITH`, `REGEX` |
 | Date filtering | `DATE_CONFIG`, `FORMAT`, `TIMEZONE`, `BETWEEN`, `DATE_PRESET`, `TODAY`, `YESTERDAY`, `THIS_WEEK`, `LAST_WEEK`, `THIS_MONTH`, `LAST_MONTH`, `THIS_QUARTER`, `LAST_QUARTER`, `THIS_YEAR`, `LAST_YEAR` |
 | Output shaping | `SHAPE`, `DISTINCT`, `ORDER BY`, `ASC`, `DESC`, `LIMIT`, `OFFSET`, `GROUP BY`, `AGG`, `AS`, `HAVING` |
-| Cross-request outputs | `LOOKUP_TABLE`, `FROM`, `LOOKUP`, `BY`, `UNION`, `ALL` |
+| Cross-request outputs | `LOOKUP_TABLE`, `FROM`, `LOOKUP`, `BY`, `AS`, `UNION`, `ALL` |
+| Array expansion | `EXPAND`, `ON`, `AS` |
 
 ## 3. Statement Reference
 
@@ -226,7 +227,7 @@ Syntax:
 LOOKUP_TABLE <table-name>
   FROM <source-request>
   LOOKUP <detail-request>
-  BY <field>
+  BY <field> [AS <variable>]
   [WHERE <predicate>]
   [COLUMNS <column1>, <column2>, ...];
 ```
@@ -250,6 +251,8 @@ Notes:
 
 - `WHERE` and `COLUMNS` are both optional and can appear in either order before the semicolon.
 - `BY id` means the lookup request must be able to use `{{id}}` when it runs.
+- `BY id AS itemid` extracts the `id` field from the source row but injects it as `{{itemid}}` into the detail request URL. Use this when the source field name differs from the URL placeholder name.
+- `BY` also supports dot-separated paths for nested fields: `BY data.id AS itemid`.
 - Merged detail fields are always available as `detail.<field>`.
 - If a detail field does not clash with a source field, it is also available without the `detail.` prefix.
 - `LOOKUP_TABLE` uses raw request response rows as its source. Request-level `FILTER` and `COLUMNS` do not change its input rows.
@@ -318,6 +321,48 @@ Notes:
 - Sources must be request names, not lookup table names or union names.
 - `UNION` uses raw request response rows. Request-level `FILTER` and `COLUMNS` do not change union input rows.
 - After the union is built, you can target it with `SHAPE "<union-name>" ...`.
+
+### `EXPAND`
+
+Syntax:
+
+```sql
+EXPAND <request> ON <arrayField>;
+EXPAND <request> ON <arrayField> AS <exceptionLabel>;
+```
+
+Purpose:
+
+- Unnests a named array field within each response row into individual rows — one row per array element.
+- Parent fields are repeated on every produced row.
+- Child fields are prefixed with the array field name (e.g., `items.itemid`, `items.name`).
+- Child fields that appear in only some array elements (sparse fields) are placed in the last columns, prefixed with the exception label (default: `exceptions`).
+
+Examples:
+
+```sql
+EXPAND "My Request" ON items;
+EXPAND "My Request" ON items AS extras;
+```
+
+Given a response like:
+
+```json
+[{"category":"fruits","items":[{"itemid":1,"name":"apple"},{"itemid":2,"name":"orange"}]}]
+```
+
+`EXPAND "My Request" ON items;` produces:
+
+| category | items.itemid | items.name |
+| -------- | ------------ | ---------- |
+| fruits   | 1            | apple      |
+| fruits   | 2            | orange     |
+
+Notes:
+
+- `EXPAND` targets a single request by name; the `*` wildcard is not supported.
+- `EXPAND` is applied before `FILTER` and `SHAPE`, so those statements operate on the already-expanded rows.
+- Each request can have at most one `EXPAND` definition; a later statement for the same request replaces the earlier one.
 
 ## 4. `WHERE` and `HAVING` Keyword Reference
 
@@ -482,6 +527,7 @@ SHAPE "List posts"
 | `COLUMNS` | Yes | Yes | No | No |
 | `FILTER` | Yes | Yes | No | No |
 | `DATE_CONFIG` | Yes | Yes | No | No |
+| `EXPAND` | Yes | No | No | No |
 | `LOOKUP_TABLE` | Source request only | No | Creates a table | No |
 | `SHAPE` | Yes | Yes | Yes | Yes |
 | `UNION` | Source requests only | No | No | Creates a union |
@@ -499,7 +545,7 @@ SHAPE "List posts"
 
 | Output type | Effective order |
 | ----------- | --------------- |
-| Response-data sheet | Raw request rows -> `FILTER` -> `SHAPE` -> `COLUMNS` |
+| Response-data sheet | Raw request rows -> `EXPAND` -> `FILTER` -> `SHAPE` -> `COLUMNS` |
 | Lookup table sheet | Raw source request rows -> detail lookup merge -> table `WHERE` -> `SHAPE` -> table `COLUMNS` |
 | Union sheet | Raw request rows -> `UNION` or `UNION ... ALL` -> `SHAPE` |
 
@@ -545,6 +591,7 @@ Merge behavior when both global and selected block define values:
 | `LOOKUP_TABLE` | Global and selected entries are both kept |
 | `SHAPE` | Selected block entry for the same key wins |
 | `UNION` | Global and selected entries are both kept |
+| `EXPAND` | Selected block entry for the same key wins |
 
 ## 9. Complete Example
 
@@ -583,6 +630,7 @@ The current `.filter` parser supports:
 - row filtering
 - date parsing configuration
 - response-data column selection
+- array field expansion (`EXPAND`)
 - lookup tables
 - shaping
 - unions
@@ -599,6 +647,7 @@ The current `.filter` syntax does not expose a statement for multi-source join t
 | Wildcard filter seems ignored | A request-specific filter exists | Exact request key overrides `*` |
 | `COLUMNS` does not change a lookup table | `COLUMNS` only affects response-data sheets | Use the `COLUMNS` clause inside `LOOKUP_TABLE` |
 | `FILTER` does not change a union | `UNION` reads raw request rows | Filter the request output separately only for its own response sheet, or add a union `SHAPE` if shaping is enough |
+| `EXPAND` wildcard not working | `EXPAND` does not support `*` | Use the exact request name |
 | Request-specific `DATE_CONFIG` fails with spaces in request name | Parser limitation on `<request>.<field>` tokenization | Use `DATE_CONFIG *.<field>` |
 
 ## 12. Example Files in This Repo
