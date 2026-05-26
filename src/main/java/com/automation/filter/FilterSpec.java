@@ -12,7 +12,7 @@ import java.util.Map;
  *   // ── existing fields ──────────────────────────────────────────────────────────
  *   "collection":      "jsonplaceholder",
  *   "requests":        ["List all posts"],
- *   "responseColumns": { "*": ["id", "title"] },
+ *   "responseColumns": { "*": [{ "field": "id", "label": "Post ID" }, { "field": "title" }] },
  *   "outputPrefix":    "daily",
  *
  *   // ── row-level filters (new) ───────────────────────────────────────────────────
@@ -71,7 +71,7 @@ import java.util.Map;
 public record FilterSpec(
         String collection,
         List<String> requests,
-        Map<String, List<String>> responseColumns,
+        Map<String, List<ColumnSpec>> responseColumns,
         String outputPrefix,
         FilterAuthSpec auth,
         Map<String, String> vars,
@@ -121,7 +121,7 @@ public record FilterSpec(
     public FilterSpec(
             String collection,
             List<String> requests,
-            Map<String, List<String>> responseColumns,
+            Map<String, List<ColumnSpec>> responseColumns,
             String outputPrefix,
             FilterAuthSpec auth,
             Map<String, String> vars,
@@ -135,7 +135,7 @@ public record FilterSpec(
     public FilterSpec(
             String collection,
             List<String> requests,
-            Map<String, List<String>> responseColumns,
+            Map<String, List<ColumnSpec>> responseColumns,
             String outputPrefix,
             FilterAuthSpec auth,
             Map<String, String> vars,
@@ -150,7 +150,7 @@ public record FilterSpec(
     public FilterSpec(
             String collection,
             List<String> requests,
-            Map<String, List<String>> responseColumns,
+            Map<String, List<ColumnSpec>> responseColumns,
             String outputPrefix,
             FilterAuthSpec auth,
             Map<String, String> vars,

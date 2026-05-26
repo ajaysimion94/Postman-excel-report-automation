@@ -31,7 +31,7 @@ class FilterValidatorTest {
         PostmanCollection collection = sampleCollection();
         FilterSpec filter = new FilterSpec(
                 null, null,
-                Map.of("Does not exist", List.of("id")),
+                Map.of("Does not exist", List.of(new ColumnSpec("id", null))),
                 null, null, null, null, null, null);
 
         assertThrows(IllegalArgumentException.class,
@@ -56,7 +56,7 @@ class FilterValidatorTest {
         FilterSpec filter = new FilterSpec(
                 "demo",
                 List.of("List users"),
-                Map.of("*", List.of("id", "name")),
+                Map.of("*", List.of(new ColumnSpec("id", null), new ColumnSpec("name", null))),
                 "daily",
                 new FilterAuthSpec("u", "p", null, null, null),
                 Map.of("TEAM", "qa"),
@@ -274,7 +274,7 @@ class FilterValidatorTest {
         CustomTableSpec table = new CustomTableSpec(
                 "Active Users", "List users",
                 null, null, null, null,
-                List.of("id", "name"),
+                List.of(new ColumnSpec("id", null), new ColumnSpec("name", null)),
                 new RowFilterGroup("AND", List.of(
                         new RowFilterRule("active", "IS_TRUE", null, null, null))));
         FilterSpec filter = new FilterSpec(

@@ -3,6 +3,7 @@ package com.automation;
 import com.automation.excel.ExcelReportGenerator;
 import com.automation.filter.CustomTableSpec;
 import com.automation.filter.DataShapeSpec;
+import com.automation.filter.ColumnSpec;
 import com.automation.filter.FilterQueryParser;
 import com.automation.filter.FilterSpec;
 import com.automation.filter.RowFilterGroup;
@@ -163,7 +164,7 @@ class ExcelReportGeneratorTest {
                 "My Custom Table",
                 "List Posts",
                 null, null, null, null,
-                List.of("id", "title"),
+                List.of(new ColumnSpec("id", null), new ColumnSpec("title", null)),
                 new RowFilterGroup("AND",
                         List.of(new RowFilterRule("userId", "EQ", "1", null, null))));
         FilterSpec spec = new FilterSpec(null, null, null, null, null, null,
@@ -289,7 +290,7 @@ class ExcelReportGeneratorTest {
                         null,
                         null,
                         null,
-                        List.of("o.id", "u.name"),
+                        List.of(new ColumnSpec("o.id", null), new ColumnSpec("u.name", null)),
                         null
                 );
                 FilterSpec spec = new FilterSpec(null, null, null, null, null, null,
@@ -336,7 +337,10 @@ class ExcelReportGeneratorTest {
                         null,
                         null,
                         null,
-                        List.of("o.id", "u.name", "t.teamName"),
+                        List.of(
+                                new ColumnSpec("o.id", null),
+                                new ColumnSpec("u.name", null),
+                                new ColumnSpec("t.teamName", null)),
                         null
                 );
                 FilterSpec spec = new FilterSpec(null, null, null, null, null, null,
@@ -409,6 +413,37 @@ class ExcelReportGeneratorTest {
             }
 
     @Test
+    void columnRenameAppliesDisplayHeadersOnResponseSheet() throws Exception {
+        Path output = Files.createTempFile("report-column-rename", ".xlsx");
+        FilterSpec spec = new FilterSpec(
+                null, null,
+                Map.of("List Posts", List.of(
+                        new ColumnSpec("id", "Post ID"),
+                        new ColumnSpec("title", "Title"))),
+                null, null, null, null, null, null, null, null, null, null);
+        RuntimeConfig config = new RuntimeConfig(output, null, output, true, Map.of(), spec);
+        PostmanCollection collection = new PostmanCollection("Demo", Map.of(), List.of());
+
+        String body = "[{\"id\":1,\"title\":\"A\"},{\"id\":2,\"title\":\"B\"}]";
+        List<ExecutionResult> results = List.of(
+                new ExecutionResult("Root", "List Posts", "GET", "https://example.com/posts",
+                        200, 50, true, "", body, body, Instant.now(), List.of())
+        );
+
+        new ExcelReportGenerator().generate(collection, results, config, new RequestExecutor());
+
+        try (InputStream is = Files.newInputStream(output);
+             XSSFWorkbook wb = new XSSFWorkbook(is)) {
+            var sheet = wb.getSheet("List Posts");
+            assertNotNull(sheet);
+            org.apache.poi.ss.usermodel.Row headerRow = sheet.getRow(2);
+            assertEquals("Post ID", headerRow.getCell(0).getStringCellValue());
+            assertEquals("Title", headerRow.getCell(1).getStringCellValue());
+            assertEquals("1", sheet.getRow(3).getCell(0).getStringCellValue());
+        }
+    }
+
+    @Test
     void customSummaryEmbedsFilteredTable() throws Exception {
         Path filterFile = Files.createTempFile("summary-filter", ".filter");
         Files.writeString(filterFile, """
@@ -438,7 +473,8 @@ class ExcelReportGeneratorTest {
             var summary = wb.getSheet("Summary");
             assertNotNull(summary);
             assertTrue(summary.getRow(0).getCell(0).getStringCellValue().contains("Post Report"));
-            assertEquals("Matching posts: 2", summary.getRow(1).getCell(0).getStringCellValue());
+            assertEquals("Matching posts:", summary.getRow(1).getCell(0).getStringCellValue());
+            assertEquals("2", summary.getRow(1).getCell(1).getStringCellValue());
             assertTrue(spec.summary().items().stream().anyMatch(SummaryItem.Table.class::isInstance));
         }
     }

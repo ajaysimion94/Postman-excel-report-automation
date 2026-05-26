@@ -31,7 +31,8 @@ class FilterQueryParserTest {
         assertEquals("jsonplaceholder", spec.collection());
         assertEquals(List.of("List posts", "List users"), spec.requests());
         assertEquals("daily", spec.outputPrefix());
-        assertEquals(List.of("id", "title"), spec.responseColumns().get("*"));
+        assertEquals(List.of(new ColumnSpec("id", null), new ColumnSpec("title", null)),
+                spec.responseColumns().get("*"));
 
         RowFilterGroup where = spec.rowFilters().get("*");
         assertNull(where.logic());
@@ -152,7 +153,13 @@ class FilterQueryParserTest {
         assertEquals("List Items", table.sourceRequest());
         assertEquals("Get Item Details", table.lookupRequest());
         assertEquals("id", table.lookupParam());
-        assertEquals(List.of("id", "itemName", "detail.price", "detail.availability"), table.columns());
+        assertEquals(
+                List.of(
+                        new ColumnSpec("id", null),
+                        new ColumnSpec("itemName", null),
+                        new ColumnSpec("detail.price", null),
+                        new ColumnSpec("detail.availability", null)),
+                table.columns());
         assertNotNull(table.where());
         assertEquals(2, table.where().rules().size());
     }
@@ -177,6 +184,27 @@ class FilterQueryParserTest {
     }
 
     @Test
+    void parsesColumnRenameWithAs() throws Exception {
+        Path file = Files.createTempFile("columns-rename", ".filter");
+        Files.writeString(file, """
+                COLUMNS "List posts": id AS "Post ID", userId AS User;
+                LOOKUP_TABLE "Details"
+                  FROM "List Items"
+                  LOOKUP "Get Item Details"
+                  BY id
+                  COLUMNS id AS ID, detail.price AS Price;
+                """);
+
+        FilterSpec spec = FilterQueryParser.parse(file);
+        assertEquals(new ColumnSpec("id", "Post ID"), spec.responseColumns().get("List posts").get(0));
+        assertEquals(new ColumnSpec("userId", "User"), spec.responseColumns().get("List posts").get(1));
+
+        CustomTableSpec table = spec.customTables().get(0);
+        assertEquals(new ColumnSpec("id", "ID"), table.columns().get(0));
+        assertEquals(new ColumnSpec("detail.price", "Price"), table.columns().get(1));
+    }
+
+    @Test
     void parsesSummarySection() throws Exception {
         Path file = Files.createTempFile("summary", ".filter");
         Files.writeString(file, """
@@ -193,8 +221,9 @@ class FilterQueryParserTest {
         assertNotNull(spec.summary());
         assertEquals(4, spec.summary().items().size());
         assertNotNull(spec.summary().queries().get("POSTS"));
-        assertEquals("List posts", spec.summary().queries().get("POSTS").requestKey());
-        assertEquals("GT", spec.summary().queries().get("POSTS").filter().rules().get(0).op());
+        SummaryQuerySource.FilterRows posts = (SummaryQuerySource.FilterRows) spec.summary().queries().get("POSTS").source();
+        assertEquals("List posts", posts.requestKey());
+        assertEquals("GT", posts.filter().rules().get(0).op());
     }
 
     @Test

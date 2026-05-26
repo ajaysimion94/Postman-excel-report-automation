@@ -91,7 +91,7 @@ public final class FilterValidator {
         // Validate responseColumns keys map to requests or wildcard
         if (filter.responseColumns() != null && !filter.responseColumns().isEmpty()) {
             List<String> invalidKeys = new ArrayList<>();
-            for (Map.Entry<String, List<String>> entry : filter.responseColumns().entrySet()) {
+            for (Map.Entry<String, List<ColumnSpec>> entry : filter.responseColumns().entrySet()) {
                 String key = entry.getKey();
                 if (key == null || key.isBlank()) {
                     invalidKeys.add("<blank>");
@@ -100,14 +100,16 @@ public final class FilterValidator {
                 if (!"*".equals(key) && !available.contains(key)) {
                     invalidKeys.add(key);
                 }
-                List<String> columns = entry.getValue();
+                List<ColumnSpec> columns = entry.getValue();
                 if (columns == null || columns.isEmpty()) {
                     throw new IllegalArgumentException(
                             "Filter responseColumns entry for \"" + key + "\" must contain at least one column.");
                 }
-                if (columns.stream().anyMatch(col -> col == null || col.isBlank())) {
-                    throw new IllegalArgumentException(
-                            "Filter responseColumns entry for \"" + key + "\" contains blank column names.");
+                for (ColumnSpec col : columns) {
+                    if (col == null || col.field() == null || col.field().isBlank()) {
+                        throw new IllegalArgumentException(
+                                "Filter responseColumns entry for \"" + key + "\" contains a blank column field.");
+                    }
                 }
             }
             if (!invalidKeys.isEmpty()) {
@@ -403,17 +405,29 @@ public final class FilterValidator {
                 if (query.variableName() == null || query.variableName().isBlank()) {
                     throw new IllegalArgumentException("Summary query variable name cannot be blank.");
                 }
-                if (query.requestKey() == null || query.requestKey().isBlank()) {
-                    throw new IllegalArgumentException(
-                            "Summary query $" + query.variableName() + " is missing a request name.");
-                }
-                if (!available.contains(query.requestKey())) {
-                    throw new IllegalArgumentException(
-                            "Summary query $" + query.variableName() + " references unknown request \"" +
-                                    query.requestKey() + "\". Available: " + available);
-                }
-                if (query.filter() != null) {
-                    validateRowFilterGroup(query.filter(), "summary.$" + query.variableName());
+                if (query.source() instanceof SummaryQuerySource.FilterRows filterRows) {
+                    if (filterRows.requestKey() == null || filterRows.requestKey().isBlank()) {
+                        throw new IllegalArgumentException(
+                                "Summary query $" + query.variableName() + " is missing a request name.");
+                    }
+                    if (!available.contains(filterRows.requestKey())) {
+                        throw new IllegalArgumentException(
+                                "Summary query $" + query.variableName() + " references unknown request \"" +
+                                        filterRows.requestKey() + "\". Available: " + available);
+                    }
+                    if (filterRows.filter() != null) {
+                        validateRowFilterGroup(filterRows.filter(), "summary.$" + query.variableName());
+                    }
+                } else if (query.source() instanceof SummaryQuerySource.NamedTable named) {
+                    if (named.tableName() == null || named.tableName().isBlank()) {
+                        throw new IllegalArgumentException(
+                                "Summary query $" + query.variableName() + " is missing a table name.");
+                    }
+                    if (!customTableNames.contains(named.tableName())) {
+                        throw new IllegalArgumentException(
+                                "Summary query $" + query.variableName() + " references unknown table \"" +
+                                        named.tableName() + "\". Define LOOKUP_TABLE \"" + named.tableName() + "\" first.");
+                    }
                 }
             }
             for (SummaryItem item : filter.summary().items()) {
@@ -423,12 +437,34 @@ public final class FilterValidator {
                                 "Summary TABLE $" + table.variableName() +
                                         " is not defined. Assign it with $name = FILTER ...;");
                     }
-                } else if (item instanceof SummaryItem.Text text) {
-                    for (SummaryTextPart part : text.parts()) {
-                        if (part instanceof SummaryTextPart.Variable var
-                                && definedQueries.contains(var.name())) {
-                            // table variables are embedded via TABLE, not concatenated as text
-                            continue;
+                } else if (item instanceof SummaryItem.KeyValue kv) {
+                    for (SummaryTextPart part : kv.valueParts()) {
+                        if (part instanceof SummaryTextPart.Variable var && !definedQueries.contains(var.name())) {
+                            throw new IllegalArgumentException(
+                                    "Summary KV references undefined variable $" + var.name() + ".");
+                        }
+                    }
+                } else if (item instanceof SummaryItem.LabelValue lv) {
+                    for (SummaryTextPart part : lv.valueParts()) {
+                        if (part instanceof SummaryTextPart.Variable var && !definedQueries.contains(var.name())) {
+                            throw new IllegalArgumentException(
+                                    "Summary LV references undefined variable $" + var.name() + ".");
+                        }
+                    }
+                } else if (item instanceof SummaryItem.Text txt) {
+                    for (SummaryTextPart part : txt.parts()) {
+                        if (part instanceof SummaryTextPart.Variable var && !definedQueries.contains(var.name())) {
+                            throw new IllegalArgumentException(
+                                    "Summary TEXT references undefined variable $" + var.name() + ".");
+                        }
+                    }
+                } else if (item instanceof SummaryItem.QuickTable qt) {
+                    for (SummaryItem.InlineTableRow row : qt.rows()) {
+                        for (SummaryTextPart part : row.valueParts()) {
+                            if (part instanceof SummaryTextPart.Variable var && !definedQueries.contains(var.name())) {
+                                throw new IllegalArgumentException(
+                                        "Summary QUICK_TABLE references undefined variable $" + var.name() + ".");
+                            }
                         }
                     }
                 }

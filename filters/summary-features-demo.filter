@@ -1,0 +1,91 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Summary Features Demo
+# This filter demonstrates ALL Summary page features in one file.
+# Uses the jsonplaceholder collection with multiple requests.
+# ──────────────────────────────────────────────────────────────────────────────
+
+COLLECTION jsonplaceholder;
+REQUESTS "List all posts", "List all users", "Get comments for post", "List all todos";
+
+# ── Data shaping for response sheets ──────────────────────────────────────────
+FILTER "List all posts" WHERE userId = 1;
+COLUMNS "List all posts": id AS "Post ID", userId AS "User", title AS "Title";
+
+# ── Summary variables (datasets referenced by $name) ──────────────────────────
+# $POSTS     → posts filtered to userId = 1
+# $ALL_POSTS → all posts (unfiltered row count)
+# $COMPLETED → completed todos
+# $PENDING   → pending (incomplete) todos
+
+$POSTS     = FILTER "List all posts" WHERE userId = 1;
+$ALL_POSTS = FILTER "List all posts" WHERE userId >= 1;
+$COMPLETED = FILTER "List all todos" WHERE completed IS TRUE;
+$PENDING   = FILTER "List all todos" WHERE completed IS FALSE;
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUMMARY PAGE LAYOUT
+# Each statement below adds one block to the Summary sheet.
+# Column A = label, Column B = value (for KV/LV/TEXT with $var).
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── 1. TITLE — colored banner across columns A–B ─────────────────────────────
+TITLE "API Health Dashboard" COLOR TEAL;
+
+# ── 2. DESCRIPTION — subtitle banner ─────────────────────────────────────────
+DESCRIPTION "Automated daily report for JSONPlaceholder API" COLOR GREY_40_PERCENT;
+
+# ── 3. KV — bold grey label + value (no header row) ─────────────────────────
+KV "Filtered Posts (KV)" $POSTS;
+KV "Completed Todos (KV)" $COMPLETED;
+
+# ── 4. LV — plain (non-bold) grey label + value (no header row) ─────────────
+LV "Pending Todos (LV)" $PENDING;
+LV "All Posts Count (LV)" $ALL_POSTS;
+
+# ── 5. TEXT with literal + $var — auto label/value ───────────────────────────
+#   Label = "Posts for user 1", Value = resolved $POSTS + " in collection"
+TEXT "Posts for user 1" + $POSTS + " in collection";
+
+# ── 6. TEXT with only $var — label auto-generated as Title Case ─────────────
+#   $COMPLETED → label "Completed", value = row count
+TEXT $COMPLETED;
+
+# ── 7. TEXT without $var — merged across columns A–B ────────────────────────
+TEXT "This report is auto-generated. Review boolean values below.";
+
+# ── 8. QT — quick table with default "Label"/"Value" headers ─────────────────
+QT "Request Summary" HEADERS "Metric", "Count"
+  ROW "User 1 Posts" $POSTS
+  ROW "All Posts" $ALL_POSTS
+  ROW "Completed Todos" $COMPLETED
+  ROW "Pending Todos" $PENDING;
+
+# ── 9. LABEL_TABLE — label/value table WITHOUT header row ────────────────────
+LABEL_TABLE "Filter Details"
+  ROW "Post filter" "userId = 1"
+  ROW "Todo completed filter" "completed IS TRUE"
+  ROW "Todo pending filter" "completed IS FALSE";
+
+# ── 10. LABEL_TABLE with explicit HEADERS ───────────────────────────────────
+LABEL_TABLE "Environment" HEADERS "Property", "Setting"
+  ROW "Collection" "jsonplaceholder"
+  ROW "Base URL" "https://jsonplaceholder.typicode.com";
+
+# ── 11. TABLE — data table from $var with section title + column selection ───
+TABLE $POSTS TITLE "User 1 Posts" COLUMNS id AS "Post ID", title AS "Title";
+
+# ── 12. TABLE shorthand — just $var; (section title = humanized var name) ───
+$COMPLETED;
+
+# ── 13. Boolean conditional formatting demo ─────────────────────────────────
+# true → bright green fill + bold white text
+# false → red fill + bold white text
+QT "Boolean Formatting Demo" HEADERS "Check", "Result"
+  ROW "API is responding" "true"
+  ROW "Degraded mode" "false"
+  ROW "SSL valid" "yes"
+  ROW "Cache expired" "no";
+
+# ── 14. METRICS — execution stats (no header row) ───────────────────────────
+# Shows: Collection, Requests, Passed, Failed, Average Duration, Generated At
+METRICS;

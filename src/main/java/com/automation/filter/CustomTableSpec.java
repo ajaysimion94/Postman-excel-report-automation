@@ -116,13 +116,13 @@ public record CustomTableSpec(
         String lookupVar,
 
         /**
-         * Ordered list of column names to include in the output.
+         * Ordered columns to include in the output ({@code field} plus optional header {@code label}).
          * For join tables, use {@code "alias.field"} notation to disambiguate.
          * For lookup tables, conflicting fields from the detail response are prefixed
          * with {@code "detail."} (e.g., {@code "detail.description"}).
          * When {@code null} or empty, all columns are included.
          */
-        List<String> columns,
+        List<ColumnSpec> columns,
 
         /**
          * Optional row filter applied after joining/lookup (or directly for single-source tables).
@@ -137,7 +137,7 @@ public record CustomTableSpec(
                 List<CustomTableJoinCondition> joinOn,
                 String lookupRequest,
                 String lookupParam,
-                List<String> columns,
+                List<ColumnSpec> columns,
                 RowFilterGroup where
         ) {
                 this(name, sourceRequest, sources, null, joinOn, lookupRequest, lookupParam, null, columns, where);

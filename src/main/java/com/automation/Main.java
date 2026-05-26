@@ -52,8 +52,8 @@ public final class Main {
 
         PostmanCompatibilityValidator.validate(collection);
 
-        List<ExecutionResult> results = new RequestExecutor(config.variables()).execute(collection, config);
         RequestExecutor executor = new RequestExecutor(config.variables());
+        List<ExecutionResult> results = executor.execute(collection, config);
         List<Path> outputPaths = new ExcelReportGenerator().generate(collection, results, config, executor);
         if (outputPaths.size() == 1) {
             System.out.println("Excel report written to: " + outputPaths.get(0).toAbsolutePath());

@@ -85,7 +85,7 @@ public final class FilterQueryParser {
         if (ts.matchKeyword("COLUMNS")) {
             String requestKey = ts.readValue();
             ts.expectSymbol(":");
-            b.responseColumns.put(requestKey, ts.readCommaSeparatedValues());
+            b.responseColumns.put(requestKey, parseColumnList(ts));
             return;
         }
 
@@ -132,7 +132,7 @@ public final class FilterQueryParser {
             }
 
             RowFilterGroup where = null;
-            List<String> columns = null;
+            List<ColumnSpec> columns = null;
             while (!ts.peekSymbol(";")) {
                 if (ts.matchKeyword("WHERE")) {
                     Expr expr = parseExpr(ts);
@@ -140,7 +140,7 @@ public final class FilterQueryParser {
                     continue;
                 }
                 if (ts.matchKeyword("COLUMNS")) {
-                    columns = List.copyOf(ts.readCommaSeparatedValues());
+                    columns = parseColumnList(ts);
                     continue;
                 }
                 throw ts.error("Unexpected token in LOOKUP_TABLE clause: '" + ts.peekText() + "'");
@@ -265,8 +265,60 @@ public final class FilterQueryParser {
         }
 
         if (ts.matchKeyword("TABLE")) {
-            String varName = readSummaryVariableName(ts);
-            b.summaryItems.add(new SummaryItem.Table(varName));
+            parseSummaryTableItem(ts, b, readSummaryVariableName(ts));
+            return;
+        }
+
+        if (ts.matchKeyword("KV")) {
+            String label = ts.readValue();
+            b.summaryItems.add(new SummaryItem.KeyValue(label, parseSummaryTextExpr(ts)));
+            return;
+        }
+
+        if (ts.matchKeyword("LV")) {
+            String label = ts.readValue();
+            b.summaryItems.add(new SummaryItem.LabelValue(label, parseSummaryTextExpr(ts)));
+            return;
+        }
+
+        if (ts.matchKeyword("LABEL_TABLE")) {
+            String title = null;
+            if (ts.peekType(TokenType.STRING) || (ts.peekType(TokenType.IDENT) && !ts.peekText().equalsIgnoreCase("HEADERS") && !ts.peekText().equalsIgnoreCase("ROW"))) {
+                title = ts.readValue();
+            }
+            List<String> headers = null;
+            boolean explicitHeaders = ts.matchKeyword("HEADERS");
+            if (explicitHeaders) {
+                headers = ts.readCommaSeparatedValues();
+            }
+            List<SummaryItem.InlineTableRow> rows = new ArrayList<>();
+            while (ts.matchKeyword("ROW")) {
+                String rowLabel = ts.readValue();
+                rows.add(new SummaryItem.InlineTableRow(rowLabel, parseSummaryTextExpr(ts)));
+            }
+            b.summaryItems.add(new SummaryItem.QuickTable(title, headers, rows));
+            return;
+        }
+
+        if (ts.matchKeyword("QT") || ts.matchKeyword("QUICK_TABLE")) {
+            String title = null;
+            if (ts.peekType(TokenType.STRING) || (ts.peekType(TokenType.IDENT) && !ts.peekText().equalsIgnoreCase("HEADERS") && !ts.peekText().equalsIgnoreCase("ROW"))) {
+                title = ts.readValue();
+            }
+            List<String> headers = null;
+            if (ts.matchKeyword("HEADERS")) {
+                headers = ts.readCommaSeparatedValues();
+            }
+            List<SummaryItem.InlineTableRow> rows = new ArrayList<>();
+            while (ts.matchKeyword("ROW")) {
+                String rowLabel = ts.readValue();
+                rows.add(new SummaryItem.InlineTableRow(rowLabel, parseSummaryTextExpr(ts)));
+            }
+            if (headers == null) {
+                b.summaryItems.add(new SummaryItem.QuickTable(title, rows));
+            } else {
+                b.summaryItems.add(new SummaryItem.QuickTable(title, headers, rows));
+            }
             return;
         }
 
@@ -275,24 +327,50 @@ public final class FilterQueryParser {
             return;
         }
 
-        throw ts.error("Unknown statement. Supported: COLLECTION, OUTPUT_PREFIX, REQUESTS, REQUEST, COLUMNS, FILTER, DATE_CONFIG, LOOKUP_TABLE, SHAPE, UNION, EXPAND, TITLE, DESCRIPTION, TEXT, TABLE, METRICS, $var = FILTER ..., $var;");
+        throw ts.error("Unknown statement. Supported: COLLECTION, OUTPUT_PREFIX, REQUESTS, REQUEST, COLUMNS, FILTER, DATE_CONFIG, LOOKUP_TABLE, SHAPE, UNION, EXPAND, TITLE, DESCRIPTION, TEXT, KV, LV, TABLE, LABEL_TABLE, QT, QUICK_TABLE, METRICS, $var = FILTER ..., $var;");
     }
 
     private static void parseSummaryDollarStatement(TokenStream ts, Builder b) {
         String varName = ts.readIdentifierLike();
         if (ts.matchSymbol("=")) {
-            ts.expectKeyword("FILTER");
-            String requestKey = ts.readValue();
-            ts.expectKeyword("WHERE");
-            Expr expr = parseExpr(ts);
-            RowFilterGroup filter = compileWhere(expr, ts);
             if (b.summaryQueries.containsKey(varName)) {
                 throw ts.error("Duplicate summary variable: $" + varName);
             }
-            b.summaryQueries.put(varName, new SummaryQuerySpec(varName, requestKey, filter));
-            return;
+            if (ts.matchKeyword("FILTER")) {
+                String requestKey = ts.readValue();
+                ts.expectKeyword("WHERE");
+                Expr expr = parseExpr(ts);
+                RowFilterGroup filter = compileWhere(expr, ts);
+                b.summaryQueries.put(varName, new SummaryQuerySpec(varName,
+                        new SummaryQuerySource.FilterRows(requestKey, filter)));
+                return;
+            }
+            if (ts.matchKeyword("LOOKUP_TABLE") || ts.matchKeyword("TABLE")) {
+                String tableName = ts.readValue();
+                b.summaryQueries.put(varName, new SummaryQuerySpec(varName,
+                        new SummaryQuerySource.NamedTable(tableName)));
+                return;
+            }
+            throw ts.error("Expected FILTER or TABLE after $name =");
         }
-        b.summaryItems.add(new SummaryItem.Table(varName));
+        parseSummaryTableItem(ts, b, varName);
+    }
+
+    private static void parseSummaryTableItem(TokenStream ts, Builder b, String varName) {
+        String title = null;
+        List<ColumnSpec> columns = null;
+        while (!ts.peekSymbol(";")) {
+            if (ts.matchKeyword("TITLE")) {
+                title = ts.readValue();
+                continue;
+            }
+            if (ts.matchKeyword("COLUMNS")) {
+                columns = parseColumnList(ts);
+                continue;
+            }
+            throw ts.error("Unexpected token in TABLE clause: '" + ts.peekText() + "'");
+        }
+        b.summaryItems.add(new SummaryItem.Table(varName, title, columns));
     }
 
     private static String readSummaryVariableName(TokenStream ts) {
@@ -307,6 +385,24 @@ public final class FilterQueryParser {
             return ts.readIdentifierLike();
         }
         return null;
+    }
+
+    private static List<ColumnSpec> parseColumnList(TokenStream ts) {
+        List<ColumnSpec> out = new ArrayList<>();
+        out.add(readColumnSpec(ts));
+        while (ts.matchSymbol(",")) {
+            out.add(readColumnSpec(ts));
+        }
+        return List.copyOf(out);
+    }
+
+    private static ColumnSpec readColumnSpec(TokenStream ts) {
+        String field = ts.readIdentifierLike();
+        String label = null;
+        if (ts.matchKeyword("AS")) {
+            label = ts.readValue();
+        }
+        return new ColumnSpec(field, label);
     }
 
     private static List<SummaryTextPart> parseSummaryTextExpr(TokenStream ts) {
@@ -543,7 +639,7 @@ public final class FilterQueryParser {
     private static final class Builder {
         private String collection;
         private List<String> requests = new ArrayList<>();
-        private Map<String, List<String>> responseColumns = new LinkedHashMap<>();
+        private Map<String, List<ColumnSpec>> responseColumns = new LinkedHashMap<>();
         private String outputPrefix;
         private Map<String, RowFilterGroup> rowFilters = new LinkedHashMap<>();
         private Map<String, Map<String, DateFieldConfig>> dateConfig = new LinkedHashMap<>();

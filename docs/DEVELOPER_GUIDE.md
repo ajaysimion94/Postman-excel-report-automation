@@ -109,12 +109,37 @@ Warnings (non-fatal):
 
 `ExcelReportGenerator.generate()` now calls five sheet builders in order:
 
-1. `createSummarySheet` — unchanged
+1. `createSummarySheet` / `createCustomSummarySheet` — default metrics or custom summary from `.filter` spec
 2. `createResultsSheet` — unchanged
 3. `createFolderSheets` — unchanged
 4. `createResponseDataSheets` — applies `rowFilters` before writing rows
 5. `createCustomTableSheets` — generates custom table sheets
 6. `createUnionSheets` — generates UNION/UNION ALL sheets
+
+### Custom Summary Sheet Rendering
+
+`createCustomSummarySheet` iterates `SummaryItem` variants and renders each:
+
+| Item | Rendering |
+| ---- | --------- |
+| `Title` | Merged banner across cols A–B, colored background |
+| `Description` | Subtitle banner |
+| `KeyValue` (KV) | Bold grey label in col A, value in col B; boolean conditional formatting |
+| `LabelValue` (LV) | Plain grey label in col A, value in col B |
+| `Text` (with `$var`) | Auto-detected as label+value (Title Case humanized variable name as label) |
+| `Text` (no `$var`) | Merged text across cols A–B |
+| `Metrics` | Execution metrics as label/value rows |
+| `Table` | Section title + headers + data rows (multi-column tables auto-size beyond cols A–B) |
+| `QuickTable` (QT) | Label-value table with default "Label"/"Value" header row |
+| `QuickTable` (LABEL_TABLE) | Label-value table **without** header row by default; add `HEADERS` to include one |
+
+**Boolean conditional formatting:**
+
+- `true` / `yes` → bright green fill + bold white text (centered)
+- `false` / `no` → red fill + bold white text (centered)
+- Other values → plain text style
+
+**Variable humanization:** `$POSTS` → "Posts", `$USER_ID` → "User Id" (Title Case with spaces replacing underscores).
 
 `createResponseDataSheets` calls `applyRowFilter()` which resolves the matching
 `RowFilterGroup` (request-specific then wildcard) and evaluates each row via

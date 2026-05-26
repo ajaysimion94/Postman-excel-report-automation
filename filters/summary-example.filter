@@ -2,14 +2,29 @@ COLLECTION jsonplaceholder;
 REQUESTS "List posts";
 
 FILTER "List posts" WHERE userId = 1;
-COLUMNS "List posts": id, userId, title;
+COLUMNS "List posts": id AS "Post ID", userId AS "User", title AS "Title";
 
-# ── Summary sheet (first tab) ───────────────────────────────────────────────
+# ── Summary sheet (columns A = label, B = value) ─────────────────────────────
 TITLE "Daily Post Report" COLOR DARK_BLUE;
 DESCRIPTION "Filtered posts for user 1";
-TEXT "Matching posts: " + $POSTS;
+KV "Matching posts (KV)" $POSTS;
+LV "Matching posts (LV)" $POSTS;
+
+# TEXT with $variable now always renders as key-value with lighter label style
+TEXT "Posts from user 1" + $POSTS + " in collection";
+TEXT $POSTS;
 
 $POSTS = FILTER "List posts" WHERE userId = 1;
-$POSTS;
+TABLE $POSTS TITLE "Posts" COLUMNS id AS "Post ID", title AS "Title";
+
+# Inline label-value table with custom headers
+QT "Status Overview" HEADERS "Metric", "Value"
+  ROW "Total posts" $POSTS
+  ROW "User ID filter" "1";
+
+# Label table without header row — clean label/value layout
+LABEL_TABLE "Summary"
+  ROW "Total posts" $POSTS
+  ROW "User ID filter" "1";
 
 METRICS;

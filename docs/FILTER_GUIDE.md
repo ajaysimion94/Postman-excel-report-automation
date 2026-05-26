@@ -55,7 +55,7 @@ FILTER "List posts" WHERE (status = active OR priority = high) AND NOT archived 
 | Output shaping | `SHAPE`, `DISTINCT`, `ORDER BY`, `ASC`, `DESC`, `LIMIT`, `OFFSET`, `GROUP BY`, `AGG`, `AS`, `HAVING` |
 | Cross-request outputs | `LOOKUP_TABLE`, `FROM`, `LOOKUP`, `BY`, `AS`, `UNION`, `ALL` |
 | Array expansion | `EXPAND`, `ON`, `AS` |
-| Summary sheet layout | `TITLE`, `DESCRIPTION`, `TEXT`, `TABLE`, `METRICS`, `$var = FILTER ...`, `$var` |
+| Summary sheet layout | `TITLE`, `DESCRIPTION`, `TEXT`, `KV`, `LV`, `TABLE`, `QT`/`QUICK_TABLE`, `LABEL_TABLE`, `METRICS`, `$var = FILTER ...`, `$var` |
 
 ## 3. Statement Reference
 
@@ -150,24 +150,33 @@ Syntax:
 
 ```sql
 COLUMNS <request-or-*>: <column1>, <column2>, ...;
+COLUMNS <request-or-*>: <field> [AS <header>], ...;
 ```
 
 Purpose:
 
-- Controls which columns appear in a response-data sheet.
-- Applies only to normal request response-data sheets.
+- Controls which columns appear in a response-data sheet and their Excel header labels.
+- Applies to the matching **response-data sheet** and to **Summary** tables that use the same request (via `$var = FILTER ...`).
+- Use `AS` to rename headers without changing the JSON field used for cell values.
 
 Examples:
 
 ```sql
 COLUMNS "List posts": id, userId, title;
+COLUMNS "List posts": id AS "Post ID", userId AS "User";
 COLUMNS *: id, createdAt;
 ```
+
+Header labels:
+
+- `id AS "Post ID"` — reads `id` from the response, shows **Post ID** in Excel.
+- `userId AS User` — quoted or unquoted labels are allowed.
+- Without `AS`, the header matches the field path (e.g. `detail.price`).
 
 Notes:
 
 - The exact request key wins over `*`; they do not merge.
-- `COLUMNS` does not affect `LOOKUP_TABLE` or `UNION` outputs.
+- Request-level `COLUMNS` does not affect `LOOKUP_TABLE` or `UNION` source rows; use the `COLUMNS` clause inside `LOOKUP_TABLE` for lookup sheets (rename supported there too).
 
 ### `FILTER`
 
@@ -640,6 +649,14 @@ The current `.filter` parser supports:
 
 The current `.filter` syntax does not expose a statement for multi-source join tables. The runtime model supports them internally, but they are not available as `.filter` keywords yet.
 
+### Recently added keywords
+
+- **`LV`** — like `KV` but uses a plain (non-bold) label style.
+- **`QT`** / **`QUICK_TABLE`** — inline label-value table with default header row ("Label", "Value"). Override headers with `HEADERS`.
+- **`LABEL_TABLE`** — inline label-value table **without** a header row by default (clean label/value layout). Add `HEADERS` to include one.
+- **`TEXT` with `$var`** — auto-detected as label+value pair with plain label style. Variable names are humanized to Title Case (e.g., `$POSTS` → "Posts").
+- **`TEXT` without `$var`** — merged across columns A–B instead of confined to column A only.
+
 ## 11. Common Mistakes
 
 | Problem | Cause | Fix |
@@ -664,33 +681,171 @@ Place summary statements at the end of your `.filter` file (or in a global block
 | 2nd | `Index` | Hyperlinks to every other sheet |
 | 3rd+ | Data sheets | `Results`, folder sheets, response data, lookup tables, unions |
 
+### Summary layout
+
+- **Column A** = labels (grey background, bold for `KV`; plain grey for `LV` and auto-detected `TEXT`).
+- **Column B** = values (plain text; booleans auto-colored green/red with bold white text for high visibility).
+- **Tables** span both columns (and beyond for multi-column tables) with a compact header row (not the large workbook title style). Columns beyond A and B are auto-sized.
+- **`TEXT` without `$var`** merges across columns A–B (no label/value split).
+- **`TEXT` with `$var`** auto-detects as a label+value pair. Variable names are humanized with Title Case (e.g., `$POSTS` → label "Posts").
+- No **Metric / Value** header row on `METRICS`, `KV`, or `LV` blocks.
+
 ### Summary statements
 
 | Statement | Example | Purpose |
 | --------- | ------- | ------- |
-| `TITLE` | `TITLE "Daily Report" COLOR DARK_BLUE;` | Large heading with optional POI color name |
-| `DESCRIPTION` | `DESCRIPTION "Notes for QA";` | Subtitle / notes row |
-| `TEXT` | `TEXT "Welcome";` | Plain text line |
-| `TEXT` + concat | `TEXT "Count: " + $POSTS;` | Concatenate literals and variables (`+`) |
-| `$var = FILTER ...` | `$POSTS = FILTER "List posts" WHERE id > 10;` | Define a named query (summary-only; does not change response sheets) |
-| `$var` or `TABLE $var` | `$POSTS;` | Embed the filtered table on the Summary sheet |
-| `METRICS` | `METRICS;` | Include the default execution metrics block |
+| `TITLE` | `TITLE "Daily Report" COLOR DARK_BLUE;` | Banner across columns A–B |
+| `DESCRIPTION` | `DESCRIPTION "Notes for QA";` | Subtitle banner |
+| `KV` | `KV "Active" $FLAG;` | Label/value row, **bold** grey label style |
+| `LV` | `LV "Active" $FLAG;` | Label/value row, **plain** grey label style |
+| `TEXT` | `TEXT "Welcome";` | Merged text spanning columns A–B |
+| `TEXT` + `$var` | `TEXT "Row count" + $POSTS;` | Auto-detected as KV (label + value) with plain label style |
+| `TEXT` `$POSTS` | `TEXT $POSTS;` | KV with Title Case humanized variable name as label (e.g., "Posts") |
+| `QT` / `QUICK_TABLE` | `QT "Status" HEADERS "M","V" ROW "Total" $TOTAL ROW "Pass" $PASS;` | Inline label-value table with header row (default headers: "Label", "Value") |
+| `LABEL_TABLE` | `LABEL_TABLE "Status" ROW "Total" $TOTAL ROW "Pass" $PASS;` | Inline label-value table **without** header row by default; add `HEADERS` to include one |
+| `$var = FILTER ...` | `$POSTS = FILTER "List posts" WHERE id > 10;` | Dataset from a request (summary-only) |
+| `$var = TABLE "..."` | `$DETAILS = TABLE "Items With Details";` | Dataset from a `LOOKUP_TABLE` / custom table |
+| `TABLE $var` | `TABLE $POSTS TITLE "Posts" COLUMNS id AS "ID";` | Table with optional title and column rename |
+| `$var;` | `$POSTS;` | Shorthand for `TABLE $var;` |
+| `METRICS` | `METRICS;` | Execution stats as label/value rows |
 
-### Variable behavior in `TEXT`
+### Supported `COLOR` values
 
-- **`$queryVar`** (from `$name = FILTER ...`): renders the **row count** (e.g. `TEXT "Rows: " + $POSTS` → `Rows: 42`).
-- **Filter `vars` map** (when configured): renders the string value for scalar substitution.
+`TITLE` and `DESCRIPTION` accept an optional trailing `COLOR <name>`. Names are **case-insensitive** and may use spaces or hyphens instead of underscores (e.g. `dark blue` → `DARK_BLUE`).
+
+If the name is missing or invalid, defaults are **`DARK_BLUE`** for `TITLE` and **`GREY_50_PERCENT`** for `DESCRIPTION`.
+
+Colors map to Apache POI `IndexedColors` (palette index colors used for title/description fills):
+
+| | | | |
+| --- | --- | --- | --- |
+| `BLACK` | `BLACK1` | `WHITE` | `WHITE1` |
+| `RED` | `RED1` | `DARK_RED` | `ROSE` |
+| `GREEN` | `BRIGHT_GREEN` | `BRIGHT_GREEN1` | `DARK_GREEN` |
+| `SEA_GREEN` | `LIGHT_GREEN` | `OLIVE_GREEN` | `LIME` |
+| `BLUE` | `BLUE1` | `DARK_BLUE` | `ROYAL_BLUE` |
+| `CORNFLOWER_BLUE` | `LIGHT_CORNFLOWER_BLUE` | `SKY_BLUE` | `PALE_BLUE` |
+| `LIGHT_BLUE` | `INDIGO` | | |
+| `YELLOW` | `YELLOW1` | `DARK_YELLOW` | `LIGHT_YELLOW` |
+| `GOLD` | `LEMON_CHIFFON` | `LIGHT_ORANGE` | `ORANGE` |
+| `TEAL` | `TURQUOISE` | `TURQUOISE1` | `DARK_TEAL` |
+| `LIGHT_TURQUOISE` | `LIGHT_TURQUOISE1` | `AQUA` | |
+| `VIOLET` | `PLUM` | `ORCHID` | `LAVENDER` |
+| `PINK` | `PINK1` | `CORAL` | `MAROON` |
+| `BROWN` | `TAN` | | |
+| `GREY_25_PERCENT` | `GREY_40_PERCENT` | `GREY_50_PERCENT` | `GREY_80_PERCENT` |
+| `BLUE_GREY` | `AUTOMATIC` | | |
+
+Built-in sheet styles elsewhere in the workbook also use: `TEAL`, `DARK_TEAL`, `DARK_GREEN`, `SEA_GREEN`, `BROWN`, `GOLD`, `VIOLET`, `PLUM`, `DARK_RED`, `RED`, `INDIGO`, and `ROSE` — any name in the table above is valid in summary `COLOR` clauses.
+
+### Variable values in `KV` / `LV` / `TEXT` / `QT`
+
+| Situation | Value shown in column B |
+| --------- | ------------------------ |
+| `$var` has **one row, one column** | That cell value |
+| `$var` has multiple rows | Row count |
+| Filter `vars` map | Configured string |
+
+When `$var` is used alone (e.g., `TEXT $POSTS;`), the label is auto-generated from the variable name in Title Case (e.g., `$POSTS` → "Posts", `$USER_ID` → "User Id").
+
+**Boolean coloring:** values `true` / `false` (and `yes` / `no`) use bold white text on bright green fill (true) or red fill (false) for high visibility.
+
+### `QT` / `QUICK_TABLE` / `LABEL_TABLE` — inline label-value tables
+
+Creates a compact two-column table directly in the Summary sheet without requiring a separate `$var` query definition.
+
+Syntax:
+
+```sql
+QT ["title"] [HEADERS <h1>, <h2>] ROW <label> <valueExpr> [ROW <label> <valueExpr> ...];
+QUICK_TABLE ["title"] [HEADERS <h1>, <h2>] ROW <label> <valueExpr> [ROW <label> <valueExpr> ...];
+LABEL_TABLE ["title"] [HEADERS <h1>, <h2>] ROW <label> <valueExpr> [ROW <label> <valueExpr> ...];
+```
+
+- **title** — optional section banner above the table
+- **HEADERS** — optional custom column headers
+  - `QT` / `QUICK_TABLE`: default headers are `"Label"`, `"Value"` (always shows header row)
+  - `LABEL_TABLE`: **no header row by default** — use `HEADERS` to add one
+- **ROW** — one row with a label string and a value expression (can contain `$var` references)
+
+The value expression supports the same text expression syntax as `TEXT` / `KV` / `LV` (literals and `$variable` parts joined with `+`).
+
+**`QT` / `QUICK_TABLE` example** (includes header row):
+
+```sql
+QT "Status Overview" HEADERS "Metric", "Count"
+  ROW "Total requests" $TOTAL
+  ROW "Passed" $PASSED
+  ROW "Failed" $FAILED;
+```
+
+Renders as:
+
+| **Status Overview** (section banner) |  |
+| Metric | Count |
+| Total requests | 150 |
+| Passed | 142 |
+| Failed | 8 |
+
+**`LABEL_TABLE` example** (no header row by default):
+
+```sql
+LABEL_TABLE "Status Overview"
+  ROW "Total requests" $TOTAL
+  ROW "Passed" $PASSED;
+```
+
+Renders as:
+
+| **Status Overview** (section banner) |  |
+| Total requests | 150 |
+| Passed | 142 |
+
+**`LABEL_TABLE` with explicit headers**:
+
+```sql
+LABEL_TABLE "Status Overview" HEADERS "Metric", "Count"
+  ROW "Total requests" $TOTAL;
+```
+
+Boolean values in the value column are automatically color-coded (bold white on bright green for `true`, bold white on red for `false`).
 
 ### Complete summary example
 
 ```sql
 COLLECTION jsonplaceholder;
-REQUESTS "List posts";
+REQUESTS "List posts", "Get post";
+
+LOOKUP_TABLE "Items With Details"
+  FROM "List posts"
+  LOOKUP "Get post"
+  BY id
+  COLUMNS id AS "Post ID", title AS "Title";
 
 TITLE "Post Report" COLOR TEAL;
-TEXT "High-id posts: " + $POSTS;
+KV "High-id count" $POSTS;
+
+# TEXT with $var renders as label+value with plain label style
+TEXT "Posts from user " + $POSTS + " filtered";
+TEXT $POSTS;
+
+# LV is like KV but with a lighter label style
+LV "High-id count (lighter)" $POSTS;
+
+# Inline quick table with default "Label"/"Value" headers
+QT "Status Overview" HEADERS "Key", "Value"
+  ROW "Matching posts" $POSTS
+  ROW "User filter" "1";
+
+# Label table without header row — clean label/value layout
+LABEL_TABLE "Counts"
+  ROW "Matching posts" $POSTS
+  ROW "User filter" "1";
+
 $POSTS = FILTER "List posts" WHERE id > 10;
-TABLE $POSTS;
+TABLE $POSTS TITLE "Filtered posts" COLUMNS id AS "Post ID", title AS "Title";
+$DETAILS = TABLE "Items With Details";
+TABLE $DETAILS TITLE "Lookup details";
 METRICS;
 ```
 
