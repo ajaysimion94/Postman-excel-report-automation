@@ -111,7 +111,12 @@ public record FilterSpec(
          * Optional array-expansion specs, keyed by request name or {@code "*"} wildcard.
          * Each entry tells the generator to unnest a named array field into individual rows.
          */
-        Map<String, ExpandSpec> expands
+        Map<String, ExpandSpec> expands,
+
+        /**
+         * Optional customizable Summary sheet layout (title, text, embedded tables, metrics).
+         */
+        SummarySpec summary
 ) {
     public FilterSpec(
             String collection,
@@ -124,7 +129,7 @@ public record FilterSpec(
             Map<String, Map<String, DateFieldConfig>> dateConfig,
             List<CustomTableSpec> customTables
     ) {
-        this(collection, requests, responseColumns, outputPrefix, auth, vars, rowFilters, dateConfig, customTables, null, null, null);
+        this(collection, requests, responseColumns, outputPrefix, auth, vars, rowFilters, dateConfig, customTables, null, null, null, null);
     }
 
     public FilterSpec(
@@ -139,7 +144,7 @@ public record FilterSpec(
             List<CustomTableSpec> customTables,
             Map<String, DataShapeSpec> dataShapes
     ) {
-        this(collection, requests, responseColumns, outputPrefix, auth, vars, rowFilters, dateConfig, customTables, dataShapes, null, null);
+        this(collection, requests, responseColumns, outputPrefix, auth, vars, rowFilters, dateConfig, customTables, dataShapes, null, null, null);
     }
 
     public FilterSpec(
@@ -155,6 +160,6 @@ public record FilterSpec(
             Map<String, DataShapeSpec> dataShapes,
             List<UnionSpec> unions
     ) {
-        this(collection, requests, responseColumns, outputPrefix, auth, vars, rowFilters, dateConfig, customTables, dataShapes, unions, null);
+        this(collection, requests, responseColumns, outputPrefix, auth, vars, rowFilters, dateConfig, customTables, dataShapes, unions, null, null);
     }
 }

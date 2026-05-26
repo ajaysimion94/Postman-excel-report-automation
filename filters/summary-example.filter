@@ -1,0 +1,15 @@
+COLLECTION jsonplaceholder;
+REQUESTS "List posts";
+
+FILTER "List posts" WHERE userId = 1;
+COLUMNS "List posts": id, userId, title;
+
+# ── Summary sheet (first tab) ───────────────────────────────────────────────
+TITLE "Daily Post Report" COLOR DARK_BLUE;
+DESCRIPTION "Filtered posts for user 1";
+TEXT "Matching posts: " + $POSTS;
+
+$POSTS = FILTER "List posts" WHERE userId = 1;
+$POSTS;
+
+METRICS;

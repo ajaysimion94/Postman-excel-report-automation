@@ -177,6 +177,27 @@ class FilterQueryParserTest {
     }
 
     @Test
+    void parsesSummarySection() throws Exception {
+        Path file = Files.createTempFile("summary", ".filter");
+        Files.writeString(file, """
+                COLLECTION demo;
+                REQUESTS "List posts";
+                TITLE "Daily Report" COLOR DARK_BLUE;
+                TEXT "Welcome";
+                $POSTS = FILTER "List posts" WHERE id > 10;
+                TABLE $POSTS;
+                METRICS;
+                """);
+
+        FilterSpec spec = FilterQueryParser.parse(file);
+        assertNotNull(spec.summary());
+        assertEquals(4, spec.summary().items().size());
+        assertNotNull(spec.summary().queries().get("POSTS"));
+        assertEquals("List posts", spec.summary().queries().get("POSTS").requestKey());
+        assertEquals("GT", spec.summary().queries().get("POSTS").filter().rules().get(0).op());
+    }
+
+    @Test
     void throwsWhenMultipleCollectionBlocksExistWithoutSelector() throws Exception {
         Path file = Files.createTempFile("multi-ambiguous", ".filter");
         Files.writeString(file, """

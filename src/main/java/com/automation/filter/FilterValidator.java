@@ -396,6 +396,44 @@ public final class FilterValidator {
                         ". Use request names from the collection or '*' wildcard.");
             }
         }
+
+        if (filter.summary() != null) {
+            Set<String> definedQueries = filter.summary().queries().keySet();
+            for (SummaryQuerySpec query : filter.summary().queries().values()) {
+                if (query.variableName() == null || query.variableName().isBlank()) {
+                    throw new IllegalArgumentException("Summary query variable name cannot be blank.");
+                }
+                if (query.requestKey() == null || query.requestKey().isBlank()) {
+                    throw new IllegalArgumentException(
+                            "Summary query $" + query.variableName() + " is missing a request name.");
+                }
+                if (!available.contains(query.requestKey())) {
+                    throw new IllegalArgumentException(
+                            "Summary query $" + query.variableName() + " references unknown request \"" +
+                                    query.requestKey() + "\". Available: " + available);
+                }
+                if (query.filter() != null) {
+                    validateRowFilterGroup(query.filter(), "summary.$" + query.variableName());
+                }
+            }
+            for (SummaryItem item : filter.summary().items()) {
+                if (item instanceof SummaryItem.Table table) {
+                    if (!definedQueries.contains(table.variableName())) {
+                        throw new IllegalArgumentException(
+                                "Summary TABLE $" + table.variableName() +
+                                        " is not defined. Assign it with $name = FILTER ...;");
+                    }
+                } else if (item instanceof SummaryItem.Text text) {
+                    for (SummaryTextPart part : text.parts()) {
+                        if (part instanceof SummaryTextPart.Variable var
+                                && definedQueries.contains(var.name())) {
+                            // table variables are embedded via TABLE, not concatenated as text
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private static void validateRowFilterGroup(RowFilterGroup group, String location) {

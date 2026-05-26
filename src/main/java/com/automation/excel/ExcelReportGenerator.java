@@ -15,13 +15,21 @@ import com.automation.filter.FilterSpec;
 import com.automation.filter.RowConditionEvaluator;
 import com.automation.filter.RowFilterGroup;
 import com.automation.filter.SortSpec;
+import com.automation.filter.SummaryItem;
+import com.automation.filter.SummaryQuerySpec;
+import com.automation.filter.SummarySpec;
+import com.automation.filter.SummaryTextPart;
 import com.automation.filter.UnionSpec;
 import com.automation.http.RequestExecutor;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.apache.poi.common.usermodel.HyperlinkType;
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.CellStyle;
+import org.apache.poi.ss.usermodel.CreationHelper;
+import org.apache.poi.ss.usermodel.Font;
+import org.apache.poi.ss.usermodel.Hyperlink;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
@@ -85,7 +93,11 @@ public final class ExcelReportGenerator {
                 Set<String> partSheetNames = new HashSet<>();
 
                 if (partIndex == 0) {
-                    createSummarySheet(workbook, styleFactory, collection, results);
+                    if (config.filterSpec() != null && config.filterSpec().summary() != null) {
+                        createCustomSummarySheet(workbook, styleFactory, collection, results, config.filterSpec());
+                    } else {
+                        createSummarySheet(workbook, styleFactory, collection, results);
+                    }
                     createResultsSheet(workbook, styleFactory, results, config.includeResponseBody());
                     createFolderSheets(workbook, styleFactory, results, config.includeResponseBody());
                 }
@@ -98,6 +110,7 @@ public final class ExcelReportGenerator {
                     createCustomTableSheets(workbook, styleFactory, results, config.filterSpec(),
                             partSheetNames, collection, config, executor);
                     createUnionSheets(workbook, styleFactory, results, config.filterSpec(), partSheetNames);
+                    createIndexSheet(workbook, styleFactory);
                 }
 
                 try (OutputStream outputStream = Files.newOutputStream(partPath)) {
@@ -263,21 +276,240 @@ public final class ExcelReportGenerator {
         CellStyle textStyle = styleFactory.createTextStyle(workbook, false);
 
         createTitleRow(sheet, titleStyle, "Execution Summary");
-        createKeyValueHeader(sheet, 2, headerStyle);
+        int nextRow = writeExecutionMetricsBlock(sheet, 2, headerStyle, textStyle, collection, results);
 
+        sheet.autoSizeColumn(0);
+        sheet.autoSizeColumn(1);
+        if (nextRow > 2) {
+            sheet.createFreezePane(0, 2);
+        }
+    }
+
+    private void createCustomSummarySheet(Workbook workbook, SheetStyleFactory styleFactory,
+                                          PostmanCollection collection, List<ExecutionResult> results,
+                                          FilterSpec filterSpec) {
+        SummarySpec summary = filterSpec.summary();
+        Sheet sheet = workbook.createSheet("Summary");
+        CellStyle defaultText = styleFactory.createTextStyle(workbook, false);
+        CellStyle defaultHeader = styleFactory.createHeaderStyle(workbook, IndexedColors.BLUE_GREY);
+        int rowCursor = 0;
+
+        Map<String, SummaryTablePayload> resolvedTables = new LinkedHashMap<>();
+        for (SummaryQuerySpec query : summary.queries().values()) {
+            resolvedTables.put(query.variableName(), resolveSummaryTable(query, results, filterSpec));
+        }
+
+        for (SummaryItem item : summary.items()) {
+            if (item instanceof SummaryItem.Title title) {
+                IndexedColors color = parseIndexedColor(title.colorName(), IndexedColors.DARK_BLUE);
+                createTitleRowAt(sheet, rowCursor++, styleFactory.createTitleStyle(workbook, color), title.text());
+                continue;
+            }
+            if (item instanceof SummaryItem.Description desc) {
+                IndexedColors color = parseIndexedColor(desc.colorName(), IndexedColors.GREY_50_PERCENT);
+                Row row = sheet.createRow(rowCursor++);
+                Cell cell = row.createCell(0);
+                cell.setCellValue(desc.text());
+                cell.setCellStyle(styleFactory.createStatusStyle(workbook, color));
+                continue;
+            }
+            if (item instanceof SummaryItem.Text text) {
+                Row row = sheet.createRow(rowCursor++);
+                setCell(row, 0, renderSummaryText(text, resolvedTables, filterSpec), defaultText);
+                continue;
+            }
+            if (item instanceof SummaryItem.Metrics) {
+                rowCursor = writeExecutionMetricsBlock(sheet, rowCursor, defaultHeader, defaultText, collection, results);
+                continue;
+            }
+            if (item instanceof SummaryItem.Table table) {
+                SummaryTablePayload payload = resolvedTables.get(table.variableName());
+                if (payload == null || payload.keys().isEmpty()) {
+                    Row notice = sheet.createRow(rowCursor++);
+                    setCell(notice, 0, "No rows for $" + table.variableName(), defaultText);
+                    continue;
+                }
+                CellStyle tableTitle = styleFactory.createTitleStyle(workbook, IndexedColors.TEAL);
+                createTitleRowAt(sheet, rowCursor++, tableTitle, "$" + table.variableName());
+                CellStyle tableHeader = styleFactory.createHeaderStyle(workbook, IndexedColors.DARK_TEAL);
+                int headerDepth = writeHierarchicalHeaders(sheet, payload.keys(), rowCursor, tableHeader);
+                int dataStart = rowCursor + headerDepth;
+                rowCursor = dataStart;
+                for (ObjectNode rowNode : payload.rows()) {
+                    Row row = sheet.createRow(rowCursor++);
+                    for (int i = 0; i < payload.keys().size(); i++) {
+                        JsonNode val = rowNode.get(payload.keys().get(i));
+                        setCell(row, i, jsonNodeToString(val), defaultText);
+                    }
+                }
+                rowCursor++;
+                autoSize(sheet, payload.keys().size());
+            }
+        }
+
+        if (summary.items().isEmpty()) {
+            createTitleRowAt(sheet, 0, styleFactory.createTitleStyle(workbook, IndexedColors.DARK_BLUE), "Summary");
+        }
+        sheet.autoSizeColumn(0);
+    }
+
+    private record SummaryTablePayload(List<String> keys, List<ObjectNode> rows) {}
+
+    private SummaryTablePayload resolveSummaryTable(SummaryQuerySpec query, List<ExecutionResult> results,
+                                                    FilterSpec filterSpec) {
+        ExecutionResult result = results.stream()
+                .filter(r -> query.requestKey().equals(r.requestName()))
+                .findFirst()
+                .orElse(null);
+        if (result == null) {
+            return new SummaryTablePayload(List.of(), List.of());
+        }
+
+        String body = result.responseBody();
+        if (body == null || body.isBlank()) {
+            return new SummaryTablePayload(List.of(), List.of());
+        }
+
+        ObjectMapper mapper = new ObjectMapper();
+        JsonNode root;
+        try {
+            root = mapper.readTree(body);
+        } catch (Exception e) {
+            return new SummaryTablePayload(List.of(), List.of());
+        }
+
+        List<ObjectNode> rows = extractResponseRows(root);
+        rows = expandRows(rows, result.requestName(), filterSpec, mapper);
+        if (query.filter() != null) {
+            rows = applyExplicitRowFilter(rows, query.filter(), result.requestName(), filterSpec);
+        }
+        rows = applyDataShape(rows, result.requestName(), filterSpec);
+        if (rows.isEmpty()) {
+            return new SummaryTablePayload(List.of(), List.of());
+        }
+
+        LinkedHashSet<String> keys = new LinkedHashSet<>();
+        for (ObjectNode row : rows) {
+            row.fieldNames().forEachRemaining(keys::add);
+        }
+        List<String> keyList = new ArrayList<>(keys);
+        if (filterSpec.responseColumns() != null) {
+            List<String> allowed = filterSpec.responseColumns().getOrDefault(
+                    result.requestName(),
+                    filterSpec.responseColumns().get("*"));
+            if (allowed != null) {
+                List<String> ordered = new ArrayList<>(allowed);
+                ordered.retainAll(keys);
+                keyList = ordered;
+            }
+        }
+        return new SummaryTablePayload(keyList, rows);
+    }
+
+    private List<ObjectNode> applyExplicitRowFilter(List<ObjectNode> rows, RowFilterGroup group,
+                                                    String requestName, FilterSpec filterSpec) {
+        Map<String, DateFieldConfig> dateFields = resolveDateConfig(requestName, filterSpec);
+        Instant now = Instant.now();
+        return rows.stream()
+                .filter(row -> RowConditionEvaluator.evaluate(row, group, dateFields, now))
+                .collect(Collectors.toList());
+    }
+
+    private String renderSummaryText(SummaryItem.Text text, Map<String, SummaryTablePayload> tables, FilterSpec filterSpec) {
+        StringBuilder sb = new StringBuilder();
+        for (SummaryTextPart part : text.parts()) {
+            if (part instanceof SummaryTextPart.Literal literal) {
+                sb.append(literal.value());
+            } else if (part instanceof SummaryTextPart.Variable var) {
+                SummaryTablePayload table = tables.get(var.name());
+                if (table != null) {
+                    sb.append(table.rows().size());
+                } else if (filterSpec.vars() != null && filterSpec.vars().containsKey(var.name())) {
+                    sb.append(filterSpec.vars().get(var.name()));
+                } else if (filterSpec.vars() != null && filterSpec.vars().containsKey("$" + var.name())) {
+                    sb.append(filterSpec.vars().get("$" + var.name()));
+                }
+            }
+        }
+        return sb.toString();
+    }
+
+    private int writeExecutionMetricsBlock(Sheet sheet, int startRow, CellStyle headerStyle, CellStyle textStyle,
+                                           PostmanCollection collection, List<ExecutionResult> results) {
+        createKeyValueHeader(sheet, startRow, headerStyle);
         long successCount = results.stream().filter(ExecutionResult::success).count();
         long failureCount = results.size() - successCount;
         long averageDuration = results.stream().mapToLong(ExecutionResult::durationMillis).sum() / Math.max(results.size(), 1);
 
-        writeKeyValueRow(sheet, 3, "Collection", collection.name(), textStyle);
-        writeKeyValueRow(sheet, 4, "Requests", String.valueOf(results.size()), textStyle);
-        writeKeyValueRow(sheet, 5, "Passed", String.valueOf(successCount), textStyle);
-        writeKeyValueRow(sheet, 6, "Failed", String.valueOf(failureCount), textStyle);
-        writeKeyValueRow(sheet, 7, "Average Duration (ms)", String.valueOf(averageDuration), textStyle);
-        writeKeyValueRow(sheet, 8, "Generated At", TIMESTAMP_FORMAT.format(java.time.Instant.now()), textStyle);
+        int row = startRow + 1;
+        writeKeyValueRow(sheet, row++, "Collection", collection.name(), textStyle);
+        writeKeyValueRow(sheet, row++, "Requests", String.valueOf(results.size()), textStyle);
+        writeKeyValueRow(sheet, row++, "Passed", String.valueOf(successCount), textStyle);
+        writeKeyValueRow(sheet, row++, "Failed", String.valueOf(failureCount), textStyle);
+        writeKeyValueRow(sheet, row++, "Average Duration (ms)", String.valueOf(averageDuration), textStyle);
+        writeKeyValueRow(sheet, row++, "Generated At", TIMESTAMP_FORMAT.format(Instant.now()), textStyle);
+        return row;
+    }
 
-        sheet.autoSizeColumn(0);
-        sheet.autoSizeColumn(1);
+    private void createTitleRowAt(Sheet sheet, int rowIndex, CellStyle style, String title) {
+        Row titleRow = sheet.createRow(rowIndex);
+        Cell cell = titleRow.createCell(0);
+        cell.setCellValue(title);
+        cell.setCellStyle(style);
+    }
+
+    private void createIndexSheet(Workbook workbook, SheetStyleFactory styleFactory) {
+        Sheet sheet = workbook.createSheet("Index");
+        CellStyle titleStyle = styleFactory.createTitleStyle(workbook, IndexedColors.INDIGO);
+        CellStyle headerStyle = styleFactory.createHeaderStyle(workbook, IndexedColors.INDIGO);
+        CellStyle linkStyle = styleFactory.createTextStyle(workbook, false);
+        Font linkFont = workbook.createFont();
+        linkFont.setUnderline(Font.U_SINGLE);
+        linkFont.setColor(IndexedColors.BLUE.getIndex());
+        linkStyle.setFont(linkFont);
+
+        createTitleRow(sheet, titleStyle, "Sheet Index");
+        Row headerRow = sheet.createRow(2);
+        setCell(headerRow, 0, "Sheet", headerStyle);
+        setCell(headerRow, 1, "Go to", headerStyle);
+
+        CreationHelper helper = workbook.getCreationHelper();
+        int rowIndex = 3;
+        for (int i = 0; i < workbook.getNumberOfSheets(); i++) {
+            String sheetName = workbook.getSheetName(i);
+            if ("Index".equals(sheetName)) {
+                continue;
+            }
+            Row row = sheet.createRow(rowIndex++);
+            setCell(row, 0, sheetName, linkStyle);
+            Cell linkCell = row.createCell(1);
+            linkCell.setCellValue("Open");
+            linkCell.setCellStyle(linkStyle);
+            Hyperlink link = helper.createHyperlink(HyperlinkType.DOCUMENT);
+            link.setAddress("'" + sheetName.replace("'", "''") + "'!A1");
+            linkCell.setHyperlink(link);
+        }
+
+        sheet.createFreezePane(0, 3);
+        sheet.setAutoFilter(new CellRangeAddress(2, 2, 0, 1));
+        autoSize(sheet, 2);
+
+        int indexPos = workbook.getSheetIndex(sheet);
+        if (indexPos > 1) {
+            workbook.setSheetOrder(sheet.getSheetName(), 1);
+        }
+    }
+
+    private static IndexedColors parseIndexedColor(String colorName, IndexedColors fallback) {
+        if (colorName == null || colorName.isBlank()) {
+            return fallback;
+        }
+        String normalized = colorName.trim().toUpperCase().replace(' ', '_').replace('-', '_');
+        try {
+            return IndexedColors.valueOf(normalized);
+        } catch (IllegalArgumentException e) {
+            return fallback;
+        }
     }
 
     private void createResultsSheet(Workbook workbook, SheetStyleFactory styleFactory, List<ExecutionResult> results, boolean includeBody) {

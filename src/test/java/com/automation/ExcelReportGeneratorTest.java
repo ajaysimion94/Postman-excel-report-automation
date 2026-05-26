@@ -3,10 +3,12 @@ package com.automation;
 import com.automation.excel.ExcelReportGenerator;
 import com.automation.filter.CustomTableSpec;
 import com.automation.filter.DataShapeSpec;
+import com.automation.filter.FilterQueryParser;
 import com.automation.filter.FilterSpec;
 import com.automation.filter.RowFilterGroup;
 import com.automation.filter.RowFilterRule;
 import com.automation.filter.SortSpec;
+import com.automation.filter.SummaryItem;
 import com.automation.filter.AggregateSpec;
 import com.automation.filter.ExpandSpec;
 import com.automation.http.RequestExecutor;
@@ -32,7 +34,7 @@ class ExcelReportGeneratorTest {
         Path output = Files.createTempFile("report-expand", ".xlsx");
         FilterSpec spec = new FilterSpec(null, null, null, null, null, null,
                 null, null, null, null, null,
-                Map.of("Category List", new ExpandSpec("items")));
+                Map.of("Category List", new ExpandSpec("items")), null);
         RuntimeConfig config = new RuntimeConfig(output, null, output, true, Map.of(), spec);
         PostmanCollection collection = new PostmanCollection("Demo", Map.of(), List.of());
 
@@ -64,7 +66,7 @@ class ExcelReportGeneratorTest {
         Path output = Files.createTempFile("report-expand-sparse", ".xlsx");
         FilterSpec spec = new FilterSpec(null, null, null, null, null, null,
                 null, null, null, null, null,
-                Map.of("Products", new ExpandSpec("variants", "extra")));
+                Map.of("Products", new ExpandSpec("variants", "extra")), null);
         RuntimeConfig config = new RuntimeConfig(output, null, output, true, Map.of(), spec);
         PostmanCollection collection = new PostmanCollection("Demo", Map.of(), List.of());
 
@@ -117,8 +119,9 @@ class ExcelReportGeneratorTest {
         try (InputStream inputStream = Files.newInputStream(output);
              XSSFWorkbook workbook = new XSSFWorkbook(inputStream)) {
             assertEquals("Summary", workbook.getSheetAt(0).getSheetName());
-            assertEquals("Results", workbook.getSheetAt(1).getSheetName());
-            assertEquals("Users", workbook.getSheetAt(2).getSheetName());
+            assertEquals("Index", workbook.getSheetAt(1).getSheetName());
+            assertEquals("Results", workbook.getSheetAt(2).getSheetName());
+            assertEquals("Users", workbook.getSheetAt(3).getSheetName());
         }
     }
 
@@ -404,4 +407,39 @@ class ExcelReportGeneratorTest {
                     assertEquals(6, allSheet.getPhysicalNumberOfRows());
                 }
             }
+
+    @Test
+    void customSummaryEmbedsFilteredTable() throws Exception {
+        Path filterFile = Files.createTempFile("summary-filter", ".filter");
+        Files.writeString(filterFile, """
+                REQUESTS "List Posts";
+                TITLE "Post Report";
+                TEXT "Matching posts: " + $POSTS;
+                $POSTS = FILTER "List Posts" WHERE id > 1;
+                $POSTS;
+                """);
+        FilterSpec spec = FilterQueryParser.parse(filterFile);
+        Path output = Files.createTempFile("report-custom-summary", ".xlsx");
+        RuntimeConfig config = new RuntimeConfig(output, null, output, true, Map.of(), spec);
+        PostmanCollection collection = new PostmanCollection("Demo", Map.of(), List.of());
+
+        String body = "[{\"id\":1,\"title\":\"A\"},{\"id\":2,\"title\":\"B\"},{\"id\":3,\"title\":\"C\"}]";
+        List<ExecutionResult> results = List.of(
+                new ExecutionResult("Root", "List Posts", "GET", "https://example.com/posts",
+                        200, 50, true, "", body, body, Instant.now(), List.of())
+        );
+
+        new ExcelReportGenerator().generate(collection, results, config, new RequestExecutor());
+
+        try (InputStream is = Files.newInputStream(output);
+             XSSFWorkbook wb = new XSSFWorkbook(is)) {
+            assertEquals("Summary", wb.getSheetAt(0).getSheetName());
+            assertEquals("Index", wb.getSheetAt(1).getSheetName());
+            var summary = wb.getSheet("Summary");
+            assertNotNull(summary);
+            assertTrue(summary.getRow(0).getCell(0).getStringCellValue().contains("Post Report"));
+            assertEquals("Matching posts: 2", summary.getRow(1).getCell(0).getStringCellValue());
+            assertTrue(spec.summary().items().stream().anyMatch(SummaryItem.Table.class::isInstance));
+        }
+    }
 }

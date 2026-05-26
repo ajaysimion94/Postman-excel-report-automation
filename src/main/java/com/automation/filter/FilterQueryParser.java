@@ -240,7 +240,89 @@ public final class FilterQueryParser {
             return;
         }
 
-        throw ts.error("Unknown statement. Supported: COLLECTION, OUTPUT_PREFIX, REQUESTS, REQUEST, COLUMNS, FILTER, DATE_CONFIG, LOOKUP_TABLE, SHAPE, UNION, EXPAND");
+        if (ts.matchSymbol("$")) {
+            parseSummaryDollarStatement(ts, b);
+            return;
+        }
+
+        if (ts.matchKeyword("TEXT")) {
+            b.summaryItems.add(new SummaryItem.Text(parseSummaryTextExpr(ts)));
+            return;
+        }
+
+        if (ts.matchKeyword("TITLE")) {
+            String text = ts.readValue();
+            String color = readOptionalColor(ts);
+            b.summaryItems.add(new SummaryItem.Title(text, color));
+            return;
+        }
+
+        if (ts.matchKeyword("DESCRIPTION")) {
+            String text = ts.readValue();
+            String color = readOptionalColor(ts);
+            b.summaryItems.add(new SummaryItem.Description(text, color));
+            return;
+        }
+
+        if (ts.matchKeyword("TABLE")) {
+            String varName = readSummaryVariableName(ts);
+            b.summaryItems.add(new SummaryItem.Table(varName));
+            return;
+        }
+
+        if (ts.matchKeyword("METRICS")) {
+            b.summaryItems.add(new SummaryItem.Metrics());
+            return;
+        }
+
+        throw ts.error("Unknown statement. Supported: COLLECTION, OUTPUT_PREFIX, REQUESTS, REQUEST, COLUMNS, FILTER, DATE_CONFIG, LOOKUP_TABLE, SHAPE, UNION, EXPAND, TITLE, DESCRIPTION, TEXT, TABLE, METRICS, $var = FILTER ..., $var;");
+    }
+
+    private static void parseSummaryDollarStatement(TokenStream ts, Builder b) {
+        String varName = ts.readIdentifierLike();
+        if (ts.matchSymbol("=")) {
+            ts.expectKeyword("FILTER");
+            String requestKey = ts.readValue();
+            ts.expectKeyword("WHERE");
+            Expr expr = parseExpr(ts);
+            RowFilterGroup filter = compileWhere(expr, ts);
+            if (b.summaryQueries.containsKey(varName)) {
+                throw ts.error("Duplicate summary variable: $" + varName);
+            }
+            b.summaryQueries.put(varName, new SummaryQuerySpec(varName, requestKey, filter));
+            return;
+        }
+        b.summaryItems.add(new SummaryItem.Table(varName));
+    }
+
+    private static String readSummaryVariableName(TokenStream ts) {
+        if (ts.matchSymbol("$")) {
+            return ts.readIdentifierLike();
+        }
+        throw ts.error("Expected summary variable name like $posts");
+    }
+
+    private static String readOptionalColor(TokenStream ts) {
+        if (ts.matchKeyword("COLOR")) {
+            return ts.readIdentifierLike();
+        }
+        return null;
+    }
+
+    private static List<SummaryTextPart> parseSummaryTextExpr(TokenStream ts) {
+        List<SummaryTextPart> parts = new ArrayList<>();
+        parts.add(readSummaryTextPart(ts));
+        while (ts.matchSymbol("+")) {
+            parts.add(readSummaryTextPart(ts));
+        }
+        return List.copyOf(parts);
+    }
+
+    private static SummaryTextPart readSummaryTextPart(TokenStream ts) {
+        if (ts.matchSymbol("$")) {
+            return new SummaryTextPart.Variable(ts.readIdentifierLike());
+        }
+        return new SummaryTextPart.Literal(ts.readValue());
     }
 
     private static List<SortSpec> parseOrderBy(TokenStream ts) {
@@ -469,8 +551,16 @@ public final class FilterQueryParser {
         private Map<String, DataShapeSpec> dataShapes = new LinkedHashMap<>();
         private List<UnionSpec> unions = new ArrayList<>();
         private Map<String, ExpandSpec> expands = new LinkedHashMap<>();
+        private List<SummaryItem> summaryItems = new ArrayList<>();
+        private Map<String, SummaryQuerySpec> summaryQueries = new LinkedHashMap<>();
 
         private FilterSpec build() {
+            SummarySpec summary = null;
+            if (!summaryItems.isEmpty() || !summaryQueries.isEmpty()) {
+                summary = new SummarySpec(
+                        summaryItems.isEmpty() ? List.of() : List.copyOf(summaryItems),
+                        summaryQueries.isEmpty() ? Map.of() : Map.copyOf(summaryQueries));
+            }
             return new FilterSpec(
                     collection,
                     requests.isEmpty() ? null : List.copyOf(requests),
@@ -483,7 +573,8 @@ public final class FilterQueryParser {
                     customTables.isEmpty() ? null : List.copyOf(customTables),
                     dataShapes.isEmpty() ? null : Map.copyOf(dataShapes),
                     unions.isEmpty() ? null : List.copyOf(unions),
-                    expands.isEmpty() ? null : Map.copyOf(expands)
+                    expands.isEmpty() ? null : Map.copyOf(expands),
+                    summary
             );
         }
     }
@@ -571,6 +662,12 @@ public final class FilterQueryParser {
 
             out.expands = new LinkedHashMap<>(global.expands);
             out.expands.putAll(specific.expands);
+
+            out.summaryItems = new ArrayList<>(global.summaryItems);
+            out.summaryItems.addAll(specific.summaryItems);
+
+            out.summaryQueries = new LinkedHashMap<>(global.summaryQueries);
+            out.summaryQueries.putAll(specific.summaryQueries);
             return out;
         }
 
@@ -613,7 +710,7 @@ public final class FilterQueryParser {
     }
 
     private static final class TokenStream {
-        private static final Set<String> SYMBOLS = Set.of(";", ",", ":", "(", ")", "=", "!=", ">", ">=", "<", "<=");
+        private static final Set<String> SYMBOLS = Set.of(";", ",", ":", "(", ")", "=", "!=", ">", ">=", "<", "<=", "+", "$");
 
         private final List<Token> tokens;
         private final Path source;
@@ -807,7 +904,7 @@ public final class FilterQueryParser {
                     col += 2;
                     continue;
                 }
-                if (Set.of(";", ",", ":", "(", ")", "=", ">", "<").contains(String.valueOf(ch))) {
+                if (SYMBOLS.contains(String.valueOf(ch))) {
                     out.add(new Token(TokenType.SYMBOL, String.valueOf(ch), line, startCol));
                     i++;
                     col++;

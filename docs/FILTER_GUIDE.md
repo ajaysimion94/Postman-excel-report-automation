@@ -55,6 +55,7 @@ FILTER "List posts" WHERE (status = active OR priority = high) AND NOT archived 
 | Output shaping | `SHAPE`, `DISTINCT`, `ORDER BY`, `ASC`, `DESC`, `LIMIT`, `OFFSET`, `GROUP BY`, `AGG`, `AS`, `HAVING` |
 | Cross-request outputs | `LOOKUP_TABLE`, `FROM`, `LOOKUP`, `BY`, `AS`, `UNION`, `ALL` |
 | Array expansion | `EXPAND`, `ON`, `AS` |
+| Summary sheet layout | `TITLE`, `DESCRIPTION`, `TEXT`, `TABLE`, `METRICS`, `$var = FILTER ...`, `$var` |
 
 ## 3. Statement Reference
 
@@ -635,6 +636,7 @@ The current `.filter` parser supports:
 - shaping
 - unions
 - multi-collection blocks
+- customizable Summary sheet and Index navigation sheet
 
 The current `.filter` syntax does not expose a statement for multi-source join tables. The runtime model supports them internally, but they are not available as `.filter` keywords yet.
 
@@ -650,9 +652,54 @@ The current `.filter` syntax does not expose a statement for multi-source join t
 | `EXPAND` wildcard not working | `EXPAND` does not support `*` | Use the exact request name |
 | Request-specific `DATE_CONFIG` fails with spaces in request name | Parser limitation on `<request>.<field>` tokenization | Use `DATE_CONFIG *.<field>` |
 
-## 12. Example Files in This Repo
+## 12. Custom Summary Sheet and Index
+
+Place summary statements at the end of your `.filter` file (or in a global block before `COLLECTION`).
+
+### Workbook layout
+
+| Position | Sheet | Purpose |
+| -------- | ----- | ------- |
+| 1st | `Summary` | Custom dashboard (or default execution metrics when no summary block is defined) |
+| 2nd | `Index` | Hyperlinks to every other sheet |
+| 3rd+ | Data sheets | `Results`, folder sheets, response data, lookup tables, unions |
+
+### Summary statements
+
+| Statement | Example | Purpose |
+| --------- | ------- | ------- |
+| `TITLE` | `TITLE "Daily Report" COLOR DARK_BLUE;` | Large heading with optional POI color name |
+| `DESCRIPTION` | `DESCRIPTION "Notes for QA";` | Subtitle / notes row |
+| `TEXT` | `TEXT "Welcome";` | Plain text line |
+| `TEXT` + concat | `TEXT "Count: " + $POSTS;` | Concatenate literals and variables (`+`) |
+| `$var = FILTER ...` | `$POSTS = FILTER "List posts" WHERE id > 10;` | Define a named query (summary-only; does not change response sheets) |
+| `$var` or `TABLE $var` | `$POSTS;` | Embed the filtered table on the Summary sheet |
+| `METRICS` | `METRICS;` | Include the default execution metrics block |
+
+### Variable behavior in `TEXT`
+
+- **`$queryVar`** (from `$name = FILTER ...`): renders the **row count** (e.g. `TEXT "Rows: " + $POSTS` → `Rows: 42`).
+- **Filter `vars` map** (when configured): renders the string value for scalar substitution.
+
+### Complete summary example
+
+```sql
+COLLECTION jsonplaceholder;
+REQUESTS "List posts";
+
+TITLE "Post Report" COLOR TEAL;
+TEXT "High-id posts: " + $POSTS;
+$POSTS = FILTER "List posts" WHERE id > 10;
+TABLE $POSTS;
+METRICS;
+```
+
+See `filters/summary-example.filter` in this repo.
+
+## 13. Example Files in This Repo
 
 - `filters/tutorial.filter`
 - `filters/frequent-use.filter`
 - `filters/multi-collection.filter`
 - `filters/posts-with-details.filter`
+- `filters/summary-example.filter`
