@@ -271,8 +271,6 @@ public final class ExcelReportGenerator {
     private void createSummarySheet(Workbook workbook, SheetStyleFactory styleFactory, PostmanCollection collection, List<ExecutionResult> results) {
         Sheet sheet = workbook.createSheet("Summary");
         CellStyle titleStyle = styleFactory.createTitleStyle(workbook, IndexedColors.DARK_BLUE);
-        CellStyle headerStyle = styleFactory.createHeaderStyle(workbook, IndexedColors.BLUE_GREY);
-        CellStyle textStyle = styleFactory.createTextStyle(workbook, false);
 
         createTitleRow(sheet, titleStyle, "Execution Summary");
         SummarySheetStyles styles = new SummarySheetStyles(workbook, styleFactory);
@@ -449,12 +447,14 @@ public final class ExcelReportGenerator {
                                                     RuntimeConfig config,
                                                     RequestExecutor executor,
                                                     ObjectMapper mapper) {
-        return switch (query.source()) {
-            case SummaryQuerySource.FilterRows filterRows -> resolveSummaryFilterRows(
+        if (query.source() instanceof SummaryQuerySource.FilterRows filterRows) {
+            return resolveSummaryFilterRows(
                     filterRows, rowsByRequest, filterSpec, mapper);
-            case SummaryQuerySource.NamedTable named -> resolveSummaryNamedTable(
+        } else if (query.source() instanceof SummaryQuerySource.NamedTable named) {
+            return resolveSummaryNamedTable(
                     named, filterSpec, rowsByRequest, collection, config, executor, mapper);
-        };
+        }
+        throw new IllegalArgumentException("Unknown summary query source: " + query.source());
     }
 
     private SummaryTablePayload resolveSummaryFilterRows(SummaryQuerySource.FilterRows query,
@@ -762,13 +762,6 @@ public final class ExcelReportGenerator {
         return row;
     }
 
-    private void createTitleRowAt(Sheet sheet, int rowIndex, CellStyle style, String title) {
-        Row titleRow = sheet.createRow(rowIndex);
-        Cell cell = titleRow.createCell(0);
-        cell.setCellValue(title);
-        cell.setCellStyle(style);
-    }
-
     private void createIndexSheet(Workbook workbook, SheetStyleFactory styleFactory) {
         Sheet sheet = workbook.createSheet("Index");
         CellStyle titleStyle = styleFactory.createTitleStyle(workbook, IndexedColors.INDIGO);
@@ -919,22 +912,6 @@ public final class ExcelReportGenerator {
         Cell cell = titleRow.createCell(0);
         cell.setCellValue(title);
         cell.setCellStyle(style);
-    }
-
-    private void createKeyValueHeader(Sheet sheet, int rowIndex, CellStyle headerStyle) {
-        Row row = sheet.createRow(rowIndex);
-        Cell keyCell = row.createCell(0);
-        keyCell.setCellValue("Metric");
-        keyCell.setCellStyle(headerStyle);
-        Cell valueCell = row.createCell(1);
-        valueCell.setCellValue("Value");
-        valueCell.setCellStyle(headerStyle);
-    }
-
-    private void writeKeyValueRow(Sheet sheet, int rowIndex, String key, String value, CellStyle style) {
-        Row row = sheet.createRow(rowIndex);
-        setCell(row, 0, key, style);
-        setCell(row, 1, value, style);
     }
 
     private void setCell(Row row, int columnIndex, String value, CellStyle style) {
