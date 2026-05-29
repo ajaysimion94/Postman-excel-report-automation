@@ -438,36 +438,51 @@ public final class FilterValidator {
                                         " is not defined. Assign it with $name = FILTER ...;");
                     }
                 } else if (item instanceof SummaryItem.KeyValue kv) {
-                    for (SummaryTextPart part : kv.valueParts()) {
-                        if (part instanceof SummaryTextPart.Variable var && !definedQueries.contains(var.name())) {
-                            throw new IllegalArgumentException(
-                                    "Summary KV references undefined variable $" + var.name() + ".");
-                        }
-                    }
+                    validateSummaryTextParts(kv.valueParts(), definedQueries, "KV");
                 } else if (item instanceof SummaryItem.LabelValue lv) {
-                    for (SummaryTextPart part : lv.valueParts()) {
-                        if (part instanceof SummaryTextPart.Variable var && !definedQueries.contains(var.name())) {
-                            throw new IllegalArgumentException(
-                                    "Summary LV references undefined variable $" + var.name() + ".");
-                        }
-                    }
+                    validateSummaryTextParts(lv.valueParts(), definedQueries, "LV");
                 } else if (item instanceof SummaryItem.Text txt) {
-                    for (SummaryTextPart part : txt.parts()) {
-                        if (part instanceof SummaryTextPart.Variable var && !definedQueries.contains(var.name())) {
-                            throw new IllegalArgumentException(
-                                    "Summary TEXT references undefined variable $" + var.name() + ".");
-                        }
-                    }
+                    validateSummaryTextParts(txt.parts(), definedQueries, "TEXT");
                 } else if (item instanceof SummaryItem.QuickTable qt) {
+                    // Validate variable references in both classic and multi-column rows
                     for (SummaryItem.InlineTableRow row : qt.rows()) {
-                        for (SummaryTextPart part : row.valueParts()) {
-                            if (part instanceof SummaryTextPart.Variable var && !definedQueries.contains(var.name())) {
-                                throw new IllegalArgumentException(
-                                        "Summary QUICK_TABLE references undefined variable $" + var.name() + ".");
+                        // Classic 2-column valueParts
+                        validateSummaryTextParts(row.valueParts(), definedQueries, "QUICK_TABLE");
+                        // Multi-column mode
+                        if (row.columns() != null) {
+                            for (List<SummaryTextPart> colParts : row.columns()) {
+                                validateSummaryTextParts(colParts, definedQueries, "QUICK_TABLE");
                             }
                         }
                     }
                 }
+                // SummaryItem.Status needs no additional validation — it uses execution results directly
+            }
+        }
+    }
+
+    /** Recursively validates variable references in summary text parts, including IF/ELSE branches. */
+    private static void validateSummaryTextParts(List<SummaryTextPart> parts, Set<String> definedQueries, String context) {
+        if (parts == null) return;
+        for (SummaryTextPart part : parts) {
+            if (part instanceof SummaryTextPart.Variable var) {
+                if (!definedQueries.contains(var.name())) {
+                    throw new IllegalArgumentException(
+                            "Summary " + context + " references undefined variable $" + var.name() + ".");
+                }
+            } else if (part instanceof SummaryTextPart.IfElse ifElse) {
+                if (!definedQueries.contains(ifElse.variableName())) {
+                    throw new IllegalArgumentException(
+                            "Summary " + context + " IF condition references undefined variable $" + ifElse.variableName() + ".");
+                }
+                String op = ifElse.op();
+                if (!Set.of("=", "==", "!=", "<>", ">", ">=", "<", "<=").contains(op)) {
+                    throw new IllegalArgumentException(
+                            "Summary " + context + " IF has unsupported operator \"" + op + "\". " +
+                            "Supported: =, ==, !=, <>, >, >=, <, <=.");
+                }
+                validateSummaryTextParts(ifElse.thenParts(), definedQueries, context + " IF THEN");
+                validateSummaryTextParts(ifElse.elseParts(), definedQueries, context + " IF ELSE");
             }
         }
     }

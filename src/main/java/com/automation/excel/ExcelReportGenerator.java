@@ -28,13 +28,16 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.apache.poi.common.usermodel.HyperlinkType;
+import org.apache.poi.ss.usermodel.BorderStyle;
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.CellStyle;
 import org.apache.poi.ss.usermodel.CreationHelper;
+import org.apache.poi.ss.usermodel.FillPatternType;
 import org.apache.poi.ss.usermodel.Font;
 import org.apache.poi.ss.usermodel.Hyperlink;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.usermodel.VerticalAlignment;
 import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.ss.usermodel.IndexedColors;
 import org.apache.poi.ss.util.CellRangeAddress;
@@ -42,6 +45,7 @@ import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -304,14 +308,31 @@ public final class ExcelReportGenerator {
         for (SummaryItem item : summary.items()) {
             if (item instanceof SummaryItem.Title title) {
                 IndexedColors color = parseIndexedColor(title.colorName(), IndexedColors.DARK_BLUE);
-                rowCursor = writeSummaryBanner(sheet, rowCursor,
-                        styleFactory.createTitleStyle(workbook, color), title.text());
+                CellStyle titleStyle;
+                if (title.colorName() != null && (title.colorName().startsWith("#") || isHexString(title.colorName()))) {
+                    titleStyle = styleFactory.createTitleStyle(workbook, color, title.colorName());
+                } else {
+                    titleStyle = styleFactory.createTitleStyle(workbook, color);
+                }
+                rowCursor = writeSummaryBanner(sheet, rowCursor, titleStyle, title.text());
                 continue;
             }
             if (item instanceof SummaryItem.Description desc) {
                 IndexedColors color = parseIndexedColor(desc.colorName(), IndexedColors.GREY_50_PERCENT);
-                rowCursor = writeSummaryBanner(sheet, rowCursor,
-                        styleFactory.createStatusStyle(workbook, color), desc.text());
+                CellStyle descStyle;
+                if (desc.colorName() != null && (desc.colorName().startsWith("#") || isHexString(desc.colorName()))) {
+                    descStyle = styleFactory.createStatusStyle(workbook, color);
+                    // Apply custom hex fill
+                    byte[] rgb = hexToRgb(desc.colorName());
+                    if (workbook instanceof org.apache.poi.xssf.usermodel.XSSFWorkbook) {
+                        org.apache.poi.xssf.usermodel.XSSFColor customColor =
+                                new org.apache.poi.xssf.usermodel.XSSFColor(rgb, null);
+                        ((org.apache.poi.xssf.usermodel.XSSFCellStyle) descStyle).setFillForegroundColor(customColor);
+                    }
+                } else {
+                    descStyle = styleFactory.createStatusStyle(workbook, color);
+                }
+                rowCursor = writeSummaryBanner(sheet, rowCursor, descStyle, desc.text());
                 continue;
             }
             if (item instanceof SummaryItem.KeyValue kv) {
@@ -364,7 +385,10 @@ public final class ExcelReportGenerator {
             }
             if (item instanceof SummaryItem.QuickTable qt) {
                 rowCursor = writeQuickTable(sheet, rowCursor, qt.title(), qt.headers(), qt.rows(),
-                        resolvedTables, filterSpec, styles);
+                        resolvedTables, filterSpec, styles, workbook);
+            }
+            if (item instanceof SummaryItem.Status statusItem) {
+                rowCursor = writeRequestStatusBlock(sheet, rowCursor, styles, results, statusItem.colorName(), workbook);
             }
         }
 
@@ -378,6 +402,13 @@ public final class ExcelReportGenerator {
                 if (payload != null && !payload.columns().isEmpty()) {
                     maxCol = Math.max(maxCol, payload.columns().size() - 1);
                 }
+            }
+            if (item instanceof SummaryItem.QuickTable qt) {
+                int qtCols = (qt.headers() != null && !qt.headers().isEmpty()) ? qt.headers().size() : 2;
+                maxCol = Math.max(maxCol, qtCols - 1);
+            }
+            if (item instanceof SummaryItem.Status) {
+                maxCol = Math.max(maxCol, 4); // 5 columns for STATUS block
             }
         }
         sheet.setColumnWidth(0, 14_000);
@@ -608,30 +639,34 @@ public final class ExcelReportGenerator {
     private int writeQuickTable(Sheet sheet, int rowIndex, String title, List<String> headers,
                                 List<InlineTableRow> rows,
                                 Map<String, SummaryTablePayload> resolvedTables,
-                                FilterSpec filterSpec, SummarySheetStyles styles) {
+                                FilterSpec filterSpec, SummarySheetStyles styles, Workbook workbook) {
         if (title != null && !title.isBlank()) {
             rowIndex = writeSummaryBanner(sheet, rowIndex, styles.sectionStyle(), title);
         }
+        int colCount = (headers != null && !headers.isEmpty()) ? headers.size() : 2;
         if (headers != null && !headers.isEmpty()) {
             Row headerRow = sheet.createRow(rowIndex++);
-            String h1 = headers.size() > 0 ? headers.get(0) : "Label";
-            String h2 = headers.size() > 1 ? headers.get(1) : "Value";
-            Cell h1Cell = headerRow.createCell(0);
-            h1Cell.setCellValue(h1);
-            h1Cell.setCellStyle(styles.tableHeaderStyle());
-            Cell h2Cell = headerRow.createCell(1);
-            h2Cell.setCellValue(h2);
-            h2Cell.setCellStyle(styles.tableHeaderStyle());
+            for (int i = 0; i < headers.size(); i++) {
+                Cell cell = headerRow.createCell(i);
+                cell.setCellValue(headers.get(i));
+                cell.setCellStyle(styles.tableHeaderStyle());
+            }
         }
         for (InlineTableRow r : rows) {
             Row row = sheet.createRow(rowIndex++);
-            Cell labelCell = row.createCell(0);
-            labelCell.setCellValue(r.label() == null ? "" : r.label());
-            labelCell.setCellStyle(styles.autoLabelStyle());
-            Cell valueCell = row.createCell(1);
-            String value = renderSummaryValue(r.valueParts(), resolvedTables, filterSpec);
-            valueCell.setCellValue(value);
-            valueCell.setCellStyle(styles.valueStyleFor(value));
+            List<List<SummaryTextPart>> effectiveCols = r.effectiveColumns();
+            for (int col = 0; col < colCount; col++) {
+                List<SummaryTextPart> parts = col < effectiveCols.size() ? effectiveCols.get(col) : List.of();
+                String value = renderSummaryValue(parts, resolvedTables, filterSpec);
+                Cell cell = row.createCell(col);
+                cell.setCellValue(value);
+                // Use auto-label style for column 0 in classic 2-col mode, value style otherwise
+                if (col == 0 && r.columns() == null) {
+                    cell.setCellStyle(styles.autoLabelStyle());
+                } else {
+                    cell.setCellStyle(styles.valueStyleFor(value));
+                }
+            }
         }
         return rowIndex;
     }
@@ -721,9 +756,57 @@ public final class ExcelReportGenerator {
                 sb.append(literal.value());
             } else if (part instanceof SummaryTextPart.Variable var) {
                 sb.append(resolveSummaryScalar(var.name(), tables, filterSpec));
+            } else if (part instanceof SummaryTextPart.IfElse ifElse) {
+                sb.append(resolveSummaryIfElse(ifElse, tables, filterSpec));
             }
         }
         return sb.toString();
+    }
+
+    /**
+     * Evaluates a summary IF/ELSE conditional by resolving the variable, comparing
+     * it against the target value, and then rendering either the THEN or ELSE branch.
+     *
+     * <p>The variable resolves using the same logic as {@link SummaryTextPart.Variable}:
+     * single-cell scalars are compared directly; multi-row results use the row count.
+     */
+    private String resolveSummaryIfElse(SummaryTextPart.IfElse ifElse,
+                                        Map<String, SummaryTablePayload> tables,
+                                        FilterSpec filterSpec) {
+        String resolvedValue = resolveSummaryScalar(ifElse.variableName(), tables, filterSpec);
+        boolean conditionMet = evaluateSummaryCondition(resolvedValue, ifElse.op(), ifElse.value());
+        List<SummaryTextPart> branch = conditionMet ? ifElse.thenParts() : ifElse.elseParts();
+        return renderSummaryValue(branch != null ? branch : List.of(), tables, filterSpec);
+    }
+
+    /**
+     * Compares a resolved variable value against a target using the given operator.
+     * Tries numeric comparison first; falls back to case-insensitive string comparison.
+     */
+    private boolean evaluateSummaryCondition(String resolvedValue, String op, String target) {
+        if (resolvedValue == null || resolvedValue.isBlank()) {
+            resolvedValue = "0"; // Empty/missing variables default to 0 for numeric comparisons
+        }
+        int cmp;
+        try {
+            double leftNum  = Double.parseDouble(resolvedValue.trim());
+            double rightNum = Double.parseDouble(target.trim());
+            cmp = Double.compare(leftNum, rightNum);
+        } catch (NumberFormatException ignored) {
+            cmp = resolvedValue.compareToIgnoreCase(target);
+        }
+        return switch (op) {
+            case "=", "==" -> cmp == 0;
+            case "!=", "<>" -> cmp != 0;
+            case ">"  -> cmp > 0;
+            case ">=" -> cmp >= 0;
+            case "<"  -> cmp < 0;
+            case "<=" -> cmp <= 0;
+            default -> {
+                System.err.printf("[WARN] Unknown IF operator \"%s\" in summary — defaulting to false.%n", op);
+                yield false;
+            }
+        };
     }
 
     private String resolveSummaryScalar(String varName, Map<String, SummaryTablePayload> tables, FilterSpec filterSpec) {
@@ -758,8 +841,179 @@ public final class ExcelReportGenerator {
         row = writeSummaryKeyValue(sheet, row, "Passed", String.valueOf(successCount), styles);
         row = writeSummaryKeyValue(sheet, row, "Failed", String.valueOf(failureCount), styles);
         row = writeSummaryKeyValue(sheet, row, "Average Duration (ms)", String.valueOf(averageDuration), styles);
+
+        // Per-server status — deduplicated hosts with aggregate success/failure
+        Map<String, Boolean> serverStatus = extractServerStatus(results);
+        List<String> sortedServers = new ArrayList<>(serverStatus.keySet());
+        Collections.sort(sortedServers);
+        for (String server : sortedServers) {
+            String status = serverStatus.get(server) ? "Success" : "Failed";
+            row = writeSummaryKeyValue(sheet, row, "Server: " + server, status, styles);
+        }
+
         row = writeSummaryKeyValue(sheet, row, "Generated At", TIMESTAMP_FORMAT.format(Instant.now()), styles);
         return row;
+    }
+
+    /**
+     * Extracts unique server hosts from all execution result URLs and determines
+     * per-server status. A server is marked Failed if ANY request to it failed.
+     * Returns a deduplicated map of host → success (true=all passed, false=at least one failed),
+     * in insertion order.
+     */
+    private static Map<String, Boolean> extractServerStatus(List<ExecutionResult> results) {
+        Map<String, Boolean> status = new LinkedHashMap<>();
+        for (ExecutionResult result : results) {
+            String host = extractHost(result.url());
+            if (host == null || host.isBlank()) {
+                continue;
+            }
+            Boolean current = status.get(host);
+            if (current == null) {
+                status.put(host, result.success());
+            } else if (current && !result.success()) {
+                status.put(host, false);
+            }
+        }
+        return status;
+    }
+
+    /** Extracts the host (domain) from a URL string, or null if parsing fails. */
+    private static String extractHost(String url) {
+        if (url == null || url.isBlank()) {
+            return null;
+        }
+        try {
+            return URI.create(url).getHost();
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    private int writeRequestStatusBlock(Sheet sheet, int startRow, SummarySheetStyles styles,
+                                         List<ExecutionResult> results, String colorName, Workbook workbook) {
+        int row = startRow;
+        CellStyle sectionStyle = styles.sectionStyle();
+        if (colorName != null && !colorName.isBlank()) {
+            sectionStyle = createColorAwareSectionStyle(workbook, colorName);
+        }
+        row = writeSummaryBanner(sheet, row, sectionStyle, "Request Status");
+
+        // Header row
+        Row headerRow = sheet.createRow(row++);
+        String[] statusHeaders = {"Request", "Method", "Status Code", "Success", "Duration (ms)"};
+        for (int i = 0; i < statusHeaders.length; i++) {
+            Cell cell = headerRow.createCell(i);
+            cell.setCellValue(statusHeaders[i]);
+            cell.setCellStyle(styles.tableHeaderStyle());
+        }
+
+        // Data rows
+        for (ExecutionResult result : results) {
+            Row dataRow = sheet.createRow(row++);
+            setCell(dataRow, 0, result.requestName(), styles.valueStyle());
+            setCell(dataRow, 1, result.method(), styles.valueStyle());
+            setCell(dataRow, 2, String.valueOf(result.statusCode()), result.success() ? styles.trueStyle() : styles.falseStyle());
+            setCell(dataRow, 3, String.valueOf(result.success()), result.success() ? styles.trueStyle() : styles.falseStyle());
+            setCell(dataRow, 4, String.valueOf(result.durationMillis()), styles.valueStyle());
+        }
+        return row;
+    }
+
+    /**
+     * Creates a section-style CellStyle that supports any color: named IndexedColors or custom hex RGB.
+     * Hex colors (e.g. "#FF5500", "FF5500") are converted to the closest matching IndexedColor
+     * for maximum compatibility. Named colors are resolved via {@link #parseIndexedColor}.
+     */
+    private CellStyle createColorAwareSectionStyle(Workbook workbook, String colorName) {
+        // Try indexed color first
+        IndexedColors indexed = parseIndexedColor(colorName, null);
+        if (indexed != null) {
+            CellStyle style = workbook.createCellStyle();
+            Font font = workbook.createFont();
+            font.setBold(true);
+            font.setFontHeightInPoints((short) 11);
+            style.setFont(font);
+            style.setFillForegroundColor(indexed.getIndex());
+            style.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+            style.setVerticalAlignment(VerticalAlignment.TOP);
+            style.setBorderBottom(BorderStyle.THIN);
+            style.setBorderTop(BorderStyle.THIN);
+            style.setBorderLeft(BorderStyle.THIN);
+            style.setBorderRight(BorderStyle.THIN);
+            return style;
+        }
+        // Try custom hex color — convert to XSSFColor for direct RGB support
+        if (colorName.startsWith("#") || isHexString(colorName)) {
+            try {
+                byte[] rgb = hexToRgb(colorName);
+                CellStyle style = workbook.createCellStyle();
+                Font font = workbook.createFont();
+                font.setBold(true);
+                font.setFontHeightInPoints((short) 11);
+                style.setFont(font);
+                if (workbook instanceof org.apache.poi.xssf.usermodel.XSSFWorkbook xwb) {
+                    org.apache.poi.xssf.usermodel.XSSFColor customColor =
+                            new org.apache.poi.xssf.usermodel.XSSFColor(rgb, null);
+                    ((org.apache.poi.xssf.usermodel.XSSFCellStyle) style).setFillForegroundColor(customColor);
+                } else {
+                    // Fallback: closest indexed color
+                    style.setFillForegroundColor(closestIndexedColor(rgb).getIndex());
+                }
+                style.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+                style.setVerticalAlignment(VerticalAlignment.TOP);
+                style.setBorderBottom(BorderStyle.THIN);
+                style.setBorderTop(BorderStyle.THIN);
+                style.setBorderLeft(BorderStyle.THIN);
+                style.setBorderRight(BorderStyle.THIN);
+                return style;
+            } catch (IllegalArgumentException ignored) {
+                // Fall through to default
+            }
+        }
+        // Default fallback
+        return styles(workbook, new SheetStyleFactory()).sectionStyle();
+    }
+
+    /** Temporary helper to get a SummarySheetStyles instance. */
+    private SummarySheetStyles styles(Workbook workbook, SheetStyleFactory factory) {
+        return new SummarySheetStyles(workbook, factory);
+    }
+
+    private static boolean isHexString(String value) {
+        String clean = value.startsWith("#") ? value.substring(1) : value;
+        return clean.length() == 6 && clean.chars().allMatch(
+                c -> Character.digit(c, 16) >= 0);
+    }
+
+    private static byte[] hexToRgb(String hex) {
+        String clean = hex.startsWith("#") ? hex.substring(1) : hex;
+        if (clean.length() != 6) {
+            throw new IllegalArgumentException("Invalid hex color: " + hex);
+        }
+        int r = Integer.parseInt(clean.substring(0, 2), 16);
+        int g = Integer.parseInt(clean.substring(2, 4), 16);
+        int b = Integer.parseInt(clean.substring(4, 6), 16);
+        return new byte[]{(byte) r, (byte) g, (byte) b};
+    }
+
+    /** Finds the closest IndexedColor to the given RGB value using Euclidean distance. */
+    private static IndexedColors closestIndexedColor(byte[] rgb) {
+        int r = rgb[0] & 0xFF;
+        int g = rgb[1] & 0xFF;
+        int b = rgb[2] & 0xFF;
+        // Simple approach: map common hue ranges to nearby indexed colors
+        // Since XSSFWorkbook supports custom XSSFColor natively, this is only a fallback
+        // for HSSFWorkbook which we don't use in this project.
+        if (r > 200 && g < 100 && b < 100) return IndexedColors.RED;
+        if (r < 100 && g > 200 && b < 100) return IndexedColors.BRIGHT_GREEN;
+        if (r < 100 && g < 100 && b > 200) return IndexedColors.BLUE;
+        if (r > 200 && g > 200 && b < 100) return IndexedColors.YELLOW;
+        if (r > 200 && g > 100 && b < 100) return IndexedColors.ORANGE;
+        if (r > 200 && g < 100 && b > 200) return IndexedColors.VIOLET;
+        if (r > 200 && g > 200 && b > 200) return IndexedColors.GREY_50_PERCENT;
+        if (r < 80 && g < 80 && b < 80)    return IndexedColors.BLACK;
+        return IndexedColors.GREY_40_PERCENT;
     }
 
     private void createIndexSheet(Workbook workbook, SheetStyleFactory styleFactory) {
@@ -808,7 +1062,13 @@ public final class ExcelReportGenerator {
         if (colorName == null || colorName.isBlank()) {
             return fallback;
         }
-        String normalized = colorName.trim().toUpperCase().replace(' ', '_').replace('-', '_');
+        // If this is a hex color (e.g. "#FF5500" or "FF5500"), don't try to match IndexedColors;
+        // callers should use hex-aware rendering instead.
+        String trimmed = colorName.trim();
+        if (trimmed.startsWith("#") || isHexString(trimmed)) {
+            return fallback; // Let caller handle custom RGB
+        }
+        String normalized = trimmed.toUpperCase().replace(' ', '_').replace('-', '_');
         try {
             return IndexedColors.valueOf(normalized);
         } catch (IllegalArgumentException e) {

@@ -41,6 +41,11 @@ SHAPE "PostsAndUsersDistinct" ORDER BY id ASC LIMIT 200;
 # NOTE:
 # - If your collection does not contain these request names, replace them.
 # - If fields like archived or createdAt do not exist in your API, remove/edit those rules.
+# - IF/ELSE conditionals can be used in WHERE clauses:
+#     FILTER * WHERE IF priority = high THEN (severity > 7) ELSE (severity > 3);
+# - STATUS keyword shows per-request status on the Summary sheet:
+#     STATUS;
+#     STATUS COLOR "#228B22";
 
 # 10) Multi-collection blocks in one file (advanced)
 # If you keep multiple COLLECTION blocks, run with --collection-name or --collection.

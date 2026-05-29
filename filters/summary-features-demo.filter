@@ -1,6 +1,8 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # Summary Features Demo
-# This filter demonstrates ALL Summary page features in one file.
+# This filter demonstrates ALL Summary page features in one file,
+# including the new IF/ELSE conditionals, STATUS keyword, multi-column QT,
+# and hex color support.
 # Uses the jsonplaceholder collection with multiple requests.
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -28,11 +30,11 @@ $PENDING   = FILTER "List all todos" WHERE completed IS FALSE;
 # Column A = label, Column B = value (for KV/LV/TEXT with $var).
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# ── 1. TITLE — colored banner across columns A–B ─────────────────────────────
-TITLE "API Health Dashboard" COLOR TEAL;
+# ── 1. TITLE — hex color banner ───────────────────────────────────────────────
+TITLE "API Health Dashboard" COLOR "#1A5276";
 
-# ── 2. DESCRIPTION — subtitle banner ─────────────────────────────────────────
-DESCRIPTION "Automated daily report for JSONPlaceholder API" COLOR GREY_40_PERCENT;
+# ── 2. DESCRIPTION — hex color subtitle ───────────────────────────────────────
+DESCRIPTION "Automated daily report for JSONPlaceholder API" COLOR "#2E86C1";
 
 # ── 3. KV — bold grey label + value (no header row) ─────────────────────────
 KV "Filtered Posts (KV)" $POSTS;
@@ -42,42 +44,55 @@ KV "Completed Todos (KV)" $COMPLETED;
 LV "Pending Todos (LV)" $PENDING;
 LV "All Posts Count (LV)" $ALL_POSTS;
 
-# ── 5. TEXT with literal + $var — auto label/value ───────────────────────────
-#   Label = "Posts for user 1", Value = resolved $POSTS + " in collection"
+# ── 5. IF/ELSE conditional text ───────────────────────────────────────────────
+#   If $POSTS > 0 show count, otherwise show "none found"
+TEXT IF $POSTS > 0 THEN $POSTS + " posts found" ELSE "No posts found";
+
+# ── 6. Nested IF/ELSE ────────────────────────────────────────────────────────
+#   Multi-level conditional: Very High / High / Low
+KV "Volume" IF $POSTS > 500 THEN "Very High" ELSE IF $POSTS > 100 THEN "High" ELSE "Low";
+
+# ── 7. TEXT with literal + $var — auto label/value ───────────────────────────
 TEXT "Posts for user 1" + $POSTS + " in collection";
 
-# ── 6. TEXT with only $var — label auto-generated as Title Case ─────────────
-#   $COMPLETED → label "Completed", value = row count
+# ── 8. TEXT with only $var — label auto-generated as Title Case ─────────────
 TEXT $COMPLETED;
 
-# ── 7. TEXT without $var — merged across columns A–B ────────────────────────
+# ── 9. TEXT without $var — merged across columns A–B ────────────────────────
 TEXT "This report is auto-generated. Review boolean values below.";
 
-# ── 8. QT — quick table with default "Label"/"Value" headers ─────────────────
+# ── 10. Multi-column QuickTable with IF/ELSE ──────────────────────────────────
+QT "Scorecard" HEADERS Metric, Value, Level
+  ROW "User 1 Posts", $POSTS, IF $POSTS > 100 THEN "High" ELSE "Low"
+  ROW "All Posts",    $ALL_POSTS, IF $ALL_POSTS > 500 THEN "High" ELSE "Moderate"
+  ROW "Completed",   $COMPLETED, IF $COMPLETED > 50 THEN "Good" ELSE "Low"
+  ROW "Pending",     $PENDING, IF $PENDING > 50 THEN "Backlog" ELSE "On track";
+
+# ── 11. Classic 2-column QuickTable ───────────────────────────────────────────
 QT "Request Summary" HEADERS "Metric", "Count"
   ROW "User 1 Posts" $POSTS
   ROW "All Posts" $ALL_POSTS
   ROW "Completed Todos" $COMPLETED
   ROW "Pending Todos" $PENDING;
 
-# ── 9. LABEL_TABLE — label/value table WITHOUT header row ────────────────────
+# ── 12. LABEL_TABLE — label/value table WITHOUT header row ────────────────────
 LABEL_TABLE "Filter Details"
   ROW "Post filter" "userId = 1"
   ROW "Todo completed filter" "completed IS TRUE"
   ROW "Todo pending filter" "completed IS FALSE";
 
-# ── 10. LABEL_TABLE with explicit HEADERS ───────────────────────────────────
+# ── 13. LABEL_TABLE with explicit HEADERS ───────────────────────────────────
 LABEL_TABLE "Environment" HEADERS "Property", "Setting"
   ROW "Collection" "jsonplaceholder"
   ROW "Base URL" "https://jsonplaceholder.typicode.com";
 
-# ── 11. TABLE — data table from $var with section title + column selection ───
+# ── 14. TABLE — data table from $var with section title + column selection ───
 TABLE $POSTS TITLE "User 1 Posts" COLUMNS id AS "Post ID", title AS "Title";
 
-# ── 12. TABLE shorthand — just $var; (section title = humanized var name) ───
+# ── 15. TABLE shorthand — just $var; (section title = humanized var name) ───
 $COMPLETED;
 
-# ── 13. Boolean conditional formatting demo ─────────────────────────────────
+# ── 16. Boolean conditional formatting demo ─────────────────────────────────
 # true → bright green fill + bold white text
 # false → red fill + bold white text
 QT "Boolean Formatting Demo" HEADERS "Check", "Result"
@@ -86,6 +101,10 @@ QT "Boolean Formatting Demo" HEADERS "Check", "Result"
   ROW "SSL valid" "yes"
   ROW "Cache expired" "no";
 
-# ── 14. METRICS — execution stats (no header row) ───────────────────────────
+# ── 17. STATUS — per-request status table ─────────────────────────────────────
+# Shows each request's name, method, status code, success, and duration
+STATUS COLOR "#228B22";
+
+# ── 18. METRICS — aggregate execution stats ──────────────────────────────────
 # Shows: Collection, Requests, Passed, Failed, Average Duration, Generated At
 METRICS;

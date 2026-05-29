@@ -295,4 +295,75 @@ class RowConditionEvaluatorTest {
 
         assertTrue(RowConditionEvaluator.evaluate(row, group, Collections.emptyMap(), Instant.now()));
         }
+
+    // ── IF/ELSE conditional expressions ────────────────────────────────────────────
+
+    @Test
+    void ifElseTrueBranchIsEvaluatedWhenConditionMatches() {
+        ObjectNode r = row("priority", "high", "severity", 8);
+        RowFilterExpression expr = new RowFilterExpression.IfElse(
+            new RowFilterExpression.Predicate(new RowFilterRule("priority", "EQ", "high", null, null)),
+            new RowFilterExpression.Predicate(new RowFilterRule("severity", "GT", "7", null, null)),
+            new RowFilterExpression.Predicate(new RowFilterRule("severity", "GT", "3", null, null))
+        );
+        RowFilterGroup group = new RowFilterGroup(null, List.of(), expr);
+        // priority=high → THEN branch (severity > 7) → severity=8 → true
+        assertTrue(RowConditionEvaluator.evaluate(r, group, Collections.emptyMap(), Instant.now()));
+    }
+
+    @Test
+    void ifElseFalseBranchIsEvaluatedWhenConditionFails() {
+        ObjectNode r = row("priority", "low", "severity", 5);
+        RowFilterExpression expr = new RowFilterExpression.IfElse(
+            new RowFilterExpression.Predicate(new RowFilterRule("priority", "EQ", "high", null, null)),
+            new RowFilterExpression.Predicate(new RowFilterRule("severity", "GT", "7", null, null)),
+            new RowFilterExpression.Predicate(new RowFilterRule("severity", "GT", "3", null, null))
+        );
+        RowFilterGroup group = new RowFilterGroup(null, List.of(), expr);
+        // priority≠high → ELSE branch (severity > 3) → severity=5 → true
+        assertTrue(RowConditionEvaluator.evaluate(r, group, Collections.emptyMap(), Instant.now()));
+    }
+
+    @Test
+    void ifElseWithoutElseDefaultsToTrue() {
+        ObjectNode r = row("priority", "low");
+        RowFilterExpression expr = new RowFilterExpression.IfElse(
+            new RowFilterExpression.Predicate(new RowFilterRule("priority", "EQ", "high", null, null)),
+            new RowFilterExpression.Predicate(new RowFilterRule("score", "GT", "50", null, null)),
+            null // No ELSE
+        );
+        RowFilterGroup group = new RowFilterGroup(null, List.of(), expr);
+        // priority≠high → no ELSE → defaults to true
+        assertTrue(RowConditionEvaluator.evaluate(r, group, Collections.emptyMap(), Instant.now()));
+    }
+
+    @Test
+    void ifElseThenBranchFailsExcludesRow() {
+        ObjectNode r = row("priority", "high", "severity", 3);
+        RowFilterExpression expr = new RowFilterExpression.IfElse(
+            new RowFilterExpression.Predicate(new RowFilterRule("priority", "EQ", "high", null, null)),
+            new RowFilterExpression.Predicate(new RowFilterRule("severity", "GT", "7", null, null)),
+            null
+        );
+        RowFilterGroup group = new RowFilterGroup(null, List.of(), expr);
+        // priority=high → THEN branch (severity > 7) → severity=3 → false
+        assertFalse(RowConditionEvaluator.evaluate(r, group, Collections.emptyMap(), Instant.now()));
+    }
+
+    @Test
+    void nestedIfElseInAndExpression() {
+        ObjectNode r = row("type", "A", "val", 15, "category", "premium");
+        RowFilterExpression ifElse = new RowFilterExpression.IfElse(
+            new RowFilterExpression.Predicate(new RowFilterRule("type", "EQ", "A", null, null)),
+            new RowFilterExpression.Predicate(new RowFilterRule("val", "GT", "10", null, null)),
+            new RowFilterExpression.Predicate(new RowFilterRule("val", "GT", "5", null, null))
+        );
+        RowFilterExpression andExpr = new RowFilterExpression.And(
+            ifElse,
+            new RowFilterExpression.Predicate(new RowFilterRule("category", "EQ", "premium", null, null))
+        );
+        RowFilterGroup group = new RowFilterGroup(null, List.of(), andExpr);
+        // type=A → THEN (val>10) → val=15 → true, AND category=premium → true
+        assertTrue(RowConditionEvaluator.evaluate(r, group, Collections.emptyMap(), Instant.now()));
+    }
 }

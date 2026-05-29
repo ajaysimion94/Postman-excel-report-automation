@@ -4,27 +4,38 @@ REQUESTS "List posts";
 FILTER "List posts" WHERE userId = 1;
 COLUMNS "List posts": id AS "Post ID", userId AS "User", title AS "Title";
 
-# ── Summary sheet (columns A = label, B = value) ─────────────────────────────
-TITLE "Daily Post Report" COLOR DARK_BLUE;
-DESCRIPTION "Filtered posts for user 1";
-KV "Matching posts (KV)" $POSTS;
-LV "Matching posts (LV)" $POSTS;
-
-# TEXT with $variable now always renders as key-value with lighter label style
-TEXT "Posts from user 1" + $POSTS + " in collection";
-TEXT $POSTS;
-
+# ── Summary sheet ──────────────────────────────────────────────────────────────
 $POSTS = FILTER "List posts" WHERE userId = 1;
-TABLE $POSTS TITLE "Posts" COLUMNS id AS "Post ID", title AS "Title";
+$DETAILS = TABLE "Items With Details";
 
-# Inline label-value table with custom headers
+# ── Banner with hex color ──────────────────────────────────────────────────────
+TITLE "Daily Post Report" COLOR "#1A5276";
+DESCRIPTION "Filtered posts for user 1" COLOR "#2E86C1";
+
+# ── Conditional text using IF/ELSE ─────────────────────────────────────────────
+KV "Result" IF $POSTS > 0 THEN $POSTS + " posts found" ELSE "No posts found";
+LV "Volume" IF $POSTS >= 50 THEN "High" ELSE IF $POSTS > 10 THEN "Medium" ELSE "Low";
+
+# ── Multi-column QuickTable with IF/ELSE ───────────────────────────────────────
+QT "Scorecard" HEADERS Metric, Value, Level
+  ROW "Post count", $POSTS, IF $POSTS > 100 THEN "High" ELSE "Low"
+  ROW "Details",   $DETAILS, IF $DETAILS > 0 THEN "Available" ELSE "None";
+
+# ── Classic 2-column QuickTable ────────────────────────────────────────────────
 QT "Status Overview" HEADERS "Metric", "Value"
   ROW "Total posts" $POSTS
   ROW "User ID filter" "1";
 
-# Label table without header row — clean label/value layout
+# ── Label table without header row ─────────────────────────────────────────────
 LABEL_TABLE "Summary"
   ROW "Total posts" $POSTS
   ROW "User ID filter" "1";
 
+# ── Data tables ────────────────────────────────────────────────────────────────
+TABLE $POSTS TITLE "Posts" COLUMNS id AS "Post ID", title AS "Title";
+
+# ── Per-request status block ───────────────────────────────────────────────────
+STATUS COLOR "#228B22";
+
+# ── Aggregate execution metrics ────────────────────────────────────────────────
 METRICS;

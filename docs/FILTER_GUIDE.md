@@ -55,7 +55,7 @@ FILTER "List posts" WHERE (status = active OR priority = high) AND NOT archived 
 | Output shaping | `SHAPE`, `DISTINCT`, `ORDER BY`, `ASC`, `DESC`, `LIMIT`, `OFFSET`, `GROUP BY`, `AGG`, `AS`, `HAVING` |
 | Cross-request outputs | `LOOKUP_TABLE`, `FROM`, `LOOKUP`, `BY`, `AS`, `UNION`, `ALL` |
 | Array expansion | `EXPAND`, `ON`, `AS` |
-| Summary sheet layout | `TITLE`, `DESCRIPTION`, `TEXT`, `KV`, `LV`, `TABLE`, `QT`/`QUICK_TABLE`, `LABEL_TABLE`, `METRICS`, `$var = FILTER ...`, `$var` |
+| Summary sheet layout | `TITLE`, `DESCRIPTION`, `TEXT`, `KV`, `LV`, `TABLE`, `QT`/`QUICK_TABLE`, `LABEL_TABLE`, `METRICS`, `STATUS`, `$var = FILTER ...`, `$var` |
 
 ## 3. Statement Reference
 
@@ -389,6 +389,7 @@ Notes:
 | `OR` | Either condition may match | `status = active OR priority = high` |
 | `NOT` | Negates the next predicate or grouped expression | `NOT archived IS TRUE` |
 | `(` `)` | Controls grouping and precedence | `(a = 1 OR b = 2) AND c = 3` |
+| `IF` … `THEN` … `ELSE` | Conditional branching | `IF priority = high THEN (severity > 7) ELSE (severity > 3)` |
 
 Evaluation order:
 
@@ -449,6 +450,43 @@ Runtime behavior:
 | ------- | ------- | ------- | ----- |
 | `BETWEEN <from> AND <to>` | Date range match | `createdAt BETWEEN 2026-01-01 AND 2026-01-31` | Intended for date fields |
 | `DATE_PRESET <preset>` | Relative date window | `createdAt DATE_PRESET THIS_MONTH` | Uses `DATE_CONFIG` when present |
+
+### IF/ELSE conditional expressions in WHERE
+
+You can use `IF`/`ELSE` inside `WHERE` clauses to create conditional branching logic.
+
+Syntax:
+
+```sql
+IF <condition> THEN (<expr>) [ELSE (<expr>)]
+```
+
+The condition is a standard predicate (field op value). `THEN` and `ELSE` branches are full sub-expressions (can contain `AND`, `OR`, `NOT`, or nested `IF`). Parentheses around branches are optional but recommended for readability.
+
+| Keyword | Meaning | Example |
+| ------- | ------- | ------- |
+| `IF` | Starts a conditional | `IF priority = high THEN (severity > 7) ELSE (severity > 3)` |
+| `THEN` | Branch when condition is true | `IF status = active THEN (score > 50)` |
+| `ELSE` | Branch when condition is false (optional) | `IF type = A THEN (val > 10) ELSE (val > 5)` |
+
+Rules:
+
+- If `ELSE` is omitted and the condition is false, the row passes (no exclusion).
+- The condition is a single predicate (field + operator + value).
+- `IF`/`ELSE` can be nested inside `AND`/`OR` expressions.
+
+Examples:
+
+```sql
+-- Apply different thresholds depending on priority level
+FILTER * WHERE IF priority = high THEN (severity > 7) ELSE (severity > 3);
+
+-- IF without ELSE: only exclude rows when condition is true AND then-branch fails
+FILTER * WHERE IF status = active THEN (score > 50);
+
+-- Nested in AND: both the IF result AND category must match
+FILTER * WHERE IF type = A THEN (val > 10) ELSE (val > 5) AND category = premium;
+```
 
 ## 5. Date Presets and Date Parsing
 
@@ -652,10 +690,14 @@ The current `.filter` syntax does not expose a statement for multi-source join t
 ### Recently added keywords
 
 - **`LV`** — like `KV` but uses a plain (non-bold) label style.
-- **`QT`** / **`QUICK_TABLE`** — inline label-value table with default header row ("Label", "Value"). Override headers with `HEADERS`.
-- **`LABEL_TABLE`** — inline label-value table **without** a header row by default (clean label/value layout). Add `HEADERS` to include one.
+- **`QT`** / **`QUICK_TABLE`** — inline table with default header row ("Label", "Value"). Override headers with `HEADERS` or `COLUMNS`. 3+ headers enable multi-column mode with comma-separated ROW values.
+- **`LABEL_TABLE`** — inline label-value table **without** a header row by default (clean label/value layout). Add `HEADERS` or `COLUMNS` to include one.
 - **`TEXT` with `$var`** — auto-detected as label+value pair with plain label style. Variable names are humanized to Title Case (e.g., `$POSTS` → "Posts").
 - **`TEXT` without `$var`** — merged across columns A–B instead of confined to column A only.
+- **`STATUS`** — per-request status table (like `METRICS` but per-request). Shows request name, method, status code, success flag, and duration. Accepts optional `COLOR` clause.
+- **`IF/ELSE` in WHERE** — conditional branching inside filter predicates: `IF field = value THEN (expr) ELSE (expr)`.
+- **`IF/ELSE` in Summary text** — conditional rendering inside `TEXT`, `KV`, `LV`, and `QT` column values: `IF $var > 0 THEN "found" ELSE "none"`.
+- **Hex colors** — `COLOR` clauses accept hex RGB strings (e.g., `COLOR "#FF5500"` or `COLOR "336699"`) in addition to named `IndexedColors` values.
 
 ## 11. Common Mistakes
 
@@ -708,12 +750,16 @@ Place summary statements at the end of your `.filter` file (or in a global block
 | `TABLE $var` | `TABLE $POSTS TITLE "Posts" COLUMNS id AS "ID";` | Table with optional title and column rename |
 | `$var;` | `$POSTS;` | Shorthand for `TABLE $var;` |
 | `METRICS` | `METRICS;` | Execution stats as label/value rows |
+| `STATUS` | `STATUS;` or `STATUS COLOR "#228B22";` | Per-request status table (name, method, status code, success, duration) |
 
 ### Supported `COLOR` values
 
-`TITLE` and `DESCRIPTION` accept an optional trailing `COLOR <name>`. Names are **case-insensitive** and may use spaces or hyphens instead of underscores (e.g. `dark blue` → `DARK_BLUE`).
+`TITLE`, `DESCRIPTION`, and `STATUS` accept an optional trailing `COLOR <value>`. Values can be:
 
-If the name is missing or invalid, defaults are **`DARK_BLUE`** for `TITLE` and **`GREY_50_PERCENT`** for `DESCRIPTION`.
+1. **Named colors** — case-insensitive, spaces/hyphens allowed (e.g., `DARK_BLUE`, `dark blue`, `dark-blue`)
+2. **Hex RGB colors** — with or without `#` prefix (e.g., `"#FF5500"`, `"FF5500"`, `"#228B22"`)
+
+If the name is missing or invalid, defaults are **`DARK_BLUE`** for `TITLE`, **`GREY_50_PERCENT`** for `DESCRIPTION`, and **`GREY_40_PERCENT`** for `STATUS`.
 
 Colors map to Apache POI `IndexedColors` (palette index colors used for title/description fills):
 
@@ -750,25 +796,47 @@ When `$var` is used alone (e.g., `TEXT $POSTS;`), the label is auto-generated fr
 
 **Boolean coloring:** values `true` / `false` (and `yes` / `no`) use bold white text on bright green fill (true) or red fill (false) for high visibility.
 
-### `QT` / `QUICK_TABLE` / `LABEL_TABLE` — inline label-value tables
+### `QT` / `QUICK_TABLE` / `LABEL_TABLE` — inline tables
 
-Creates a compact two-column table directly in the Summary sheet without requiring a separate `$var` query definition.
+Creates a compact table directly in the Summary sheet without requiring a separate `$var` query definition.
 
-Syntax:
+**Multi-column mode** (3+ columns):
 
 ```sql
-QT ["title"] [HEADERS <h1>, <h2>] ROW <label> <valueExpr> [ROW <label> <valueExpr> ...];
-QUICK_TABLE ["title"] [HEADERS <h1>, <h2>] ROW <label> <valueExpr> [ROW <label> <valueExpr> ...];
-LABEL_TABLE ["title"] [HEADERS <h1>, <h2>] ROW <label> <valueExpr> [ROW <label> <valueExpr> ...];
+QT "Scoreboard" HEADERS Name, Score, Grade
+  ROW "Alice", $COUNT + "pts", "A"
+  ROW "Bob",   $COUNT + "pts", "B";
+
+QT "Results" COLUMNS Metric, Value, Status
+  ROW "Throughput", $TOTAL, IF $TOTAL > 100 THEN "High" ELSE "Low";
+```
+
+**Classic 2-column mode** (backward compatible):
+
+```sql
+QT "Status Overview" HEADERS "Metric", "Count"
+  ROW "Total requests" $TOTAL
+  ROW "Passed" $PASSED;
+```
+
+Full syntax:
+
+```sql
+QT ["title"] [HEADERS|COLUMNS <h1>, <h2>, ...] ROW <col1>, <col2>, ... [ROW ...];
+QUICK_TABLE ["title"] [HEADERS|COLUMNS <h1>, <h2>, ...] ROW <col1>, <col2>, ... [ROW ...];
+LABEL_TABLE ["title"] [HEADERS|COLUMNS <h1>, <h2>, ...] ROW <label> <valueExpr> [ROW ...];
 ```
 
 - **title** — optional section banner above the table
-- **HEADERS** — optional custom column headers
+- **HEADERS** or **COLUMNS** — optional custom column headers (synonyms)
   - `QT` / `QUICK_TABLE`: default headers are `"Label"`, `"Value"` (always shows header row)
-  - `LABEL_TABLE`: **no header row by default** — use `HEADERS` to add one
-- **ROW** — one row with a label string and a value expression (can contain `$var` references)
-
-The value expression supports the same text expression syntax as `TEXT` / `KV` / `LV` (literals and `$variable` parts joined with `+`).
+  - `LABEL_TABLE`: **no header row by default** — use `HEADERS` or `COLUMNS` to add one
+  - 3+ headers enable **multi-column mode** where each ROW provides comma-separated values per column
+- **ROW** — one row of data
+  - **2-column mode**: `ROW <label> <valueExpr>` (label + value expression)
+  - **3+ column mode**: `ROW <col1>, <col2>, <col3>, ...` (comma-separated expressions, one per header)
+- Each column value is a text expression (literals and `$variable` parts joined with `+`)
+- Column values also support `IF/ELSE` conditionals (see below)
 
 **`QT` / `QUICK_TABLE` example** (includes header row):
 
@@ -810,6 +878,81 @@ LABEL_TABLE "Status Overview" HEADERS "Metric", "Count"
 
 Boolean values in the value column are automatically color-coded (bold white on bright green for `true`, bold white on red for `false`).
 
+### `STATUS` — per-request status table
+
+Like `METRICS` but shows individual request status instead of aggregate stats.
+
+Syntax:
+
+```sql
+STATUS;
+STATUS COLOR <color>;
+```
+
+Produces a table with these columns:
+
+| Request | Method | Status Code | Success | Duration (ms) |
+| ------- | ------ | ----------- | ------- | ------------- |
+| List posts | GET | 200 | true | 50 |
+| Create user | POST | 500 | false | 120 |
+
+- The section title is always **"Request Status"**.
+- `Success` and `Status Code` columns are color-coded (green for pass, red for fail).
+- `COLOR` accepts both named colors and hex RGB (e.g., `COLOR "#228B22"` or `COLOR DARK_GREEN`).
+- Without `COLOR`, defaults to `GREY_40_PERCENT`.
+
+Examples:
+
+```sql
+STATUS;
+STATUS COLOR "#228B22";
+STATUS COLOR DARK_GREEN;
+```
+
+### IF/ELSE conditional text on the Summary page
+
+Summary text expressions (`TEXT`, `KV`, `LV`, and `QT` column values) support conditional rendering with `IF/ELSE`.
+
+Syntax:
+
+```sql
+IF $variable <op> <value> THEN <textExpr> [ELSE <textExpr>]
+```
+
+- **`$variable`** — a summary query variable (resolves to row count for multi-row results, or scalar for 1-row-1-column results)
+- **`op`** — comparison operator: `=`, `==`, `!=`, `<>`, `>`, `>=`, `<`, `<=`
+- **`value`** — comparison target (numeric or string)
+- **`textExpr`** — a text expression (literals, `$vars`, `+` concatenation, or nested `IF`)
+- If `ELSE` is omitted and the condition is false, the result is an empty string
+
+Comparison behavior:
+
+- Numeric comparison is tried first (e.g., `$count > 0`)
+- Falls back to case-insensitive string comparison (e.g., `$mode = active`)
+- Empty or missing variables default to `"0"` for numeric comparisons
+
+Examples:
+
+```sql
+# Conditional text
+TEXT IF $POSTS > 0 THEN $POSTS + " posts found" ELSE "No posts found";
+
+# Conditional KV
+KV "Status" IF $POSTS > 0 THEN "Has posts" ELSE "Empty";
+
+# Conditional inside a QuickTable column
+QT "Summary" HEADERS Name, Value, Level
+  ROW "Count", $POSTS, IF $POSTS > 100 THEN "High" ELSE "Low";
+
+# Nested IF/ELSE
+TEXT IF $POSTS > 100 THEN
+       IF $POSTS > 500 THEN "Very High" ELSE "High"
+     ELSE "Low";
+
+# String comparison
+KV "Mode" IF $MODE = active THEN "Running" ELSE "Stopped";
+```
+
 ### Complete summary example
 
 ```sql
@@ -822,30 +965,40 @@ LOOKUP_TABLE "Items With Details"
   BY id
   COLUMNS id AS "Post ID", title AS "Title";
 
-TITLE "Post Report" COLOR TEAL;
-KV "High-id count" $POSTS;
+$POSTS = FILTER "List posts" WHERE id > 10;
+$DETAILS = TABLE "Items With Details";
 
-# TEXT with $var renders as label+value with plain label style
-TEXT "Posts from user " + $POSTS + " filtered";
-TEXT $POSTS;
+# ── Banner with hex color ──────────────────────────────────────────────────
+TITLE "Post Report" COLOR "#1A5276";
+DESCRIPTION "Automated daily report" COLOR "#2E86C1";
 
-# LV is like KV but with a lighter label style
-LV "High-id count (lighter)" $POSTS;
+# ── Conditional text using IF/ELSE ────────────────────────────────────────
+KV "Result" IF $POSTS > 0 THEN $POSTS + " posts found" ELSE "No posts found";
+LV "Health" IF $POSTS >= 50 THEN "Healthy" ELSE IF $POSTS > 0 THEN "Low volume" ELSE "No data";
 
-# Inline quick table with default "Label"/"Value" headers
+# ── Multi-column QuickTable ───────────────────────────────────────────────
+QT "Scorecard" HEADERS Metric, Value, Level
+  ROW "Post count", $POSTS, IF $POSTS > 100 THEN "High" ELSE "Low"
+  ROW "Details",   $DETAILS, IF $DETAILS > 0 THEN "Available" ELSE "None";
+
+# ── Classic 2-column QuickTable ──────────────────────────────────────────
 QT "Status Overview" HEADERS "Key", "Value"
   ROW "Matching posts" $POSTS
   ROW "User filter" "1";
 
-# Label table without header row — clean label/value layout
+# ── Label table (no header row) ──────────────────────────────────────────
 LABEL_TABLE "Counts"
   ROW "Matching posts" $POSTS
   ROW "User filter" "1";
 
-$POSTS = FILTER "List posts" WHERE id > 10;
+# ── Data tables ──────────────────────────────────────────────────────────
 TABLE $POSTS TITLE "Filtered posts" COLUMNS id AS "Post ID", title AS "Title";
-$DETAILS = TABLE "Items With Details";
 TABLE $DETAILS TITLE "Lookup details";
+
+# ── Per-request status block ──────────────────────────────────────────────
+STATUS COLOR "#228B22";
+
+# ── Aggregate execution metrics ──────────────────────────────────────────
 METRICS;
 ```
 
@@ -853,8 +1006,11 @@ See `filters/summary-example.filter` in this repo.
 
 ## 13. Example Files in This Repo
 
-- `filters/tutorial.filter`
-- `filters/frequent-use.filter`
-- `filters/multi-collection.filter`
-- `filters/posts-with-details.filter`
-- `filters/summary-example.filter`
+- `filters/tutorial.filter` — full walkthrough of all core features
+- `filters/frequent-use.filter` — commonly used patterns
+- `filters/multi-collection.filter` — multiple `COLLECTION` blocks
+- `filters/posts-with-details.filter` — `LOOKUP_TABLE` demo
+- `filters/summary-example.filter` — customizable Summary sheet with all item types
+- `filters/summary-features-demo.filter` — comprehensive demo of every Summary feature
+- `filters/ifelse-conditional.filter` — IF/ELSE in WHERE filters and Summary text
+- `filters/status-and-multicol.filter` — STATUS keyword, multi-column QT, hex colors

@@ -108,6 +108,16 @@ public final class RowConditionEvaluator {
         if (expr instanceof RowFilterExpression.Not notExpr) {
             return !evaluateExpression(row, notExpr.expr(), dateConfig, now);
         }
+        if (expr instanceof RowFilterExpression.IfElse ifElse) {
+            boolean conditionResult = evaluateExpression(row, ifElse.condition(), dateConfig, now);
+            if (conditionResult) {
+                return evaluateExpression(row, ifElse.thenExpr(), dateConfig, now);
+            } else {
+                return ifElse.elseExpr() != null
+                        ? evaluateExpression(row, ifElse.elseExpr(), dateConfig, now)
+                        : true; // No ELSE clause → condition was false but nothing excludes the row
+            }
+        }
         return true;
     }
 

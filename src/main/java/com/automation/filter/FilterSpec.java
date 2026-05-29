@@ -65,6 +65,12 @@ import java.util.Map;
  *       ]}
  *     }
  *   ]
+ *
+ *   // ── summary sheet (new) ──────────────────────────────────────────────────────
+ *   // STATUS keyword: per-request status block (like METRICS but per-request)
+ *   // QT / QUICK_TABLE: now supports N columns via HEADERS clause
+ *   // COLOR: accepts hex colors ("#FF5500") in addition to named IndexedColors
+ *   // IF/ELSE: conditional logic in WHERE expressions
  * }
  * </pre>
  */

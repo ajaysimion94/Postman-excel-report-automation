@@ -193,11 +193,12 @@ public final class RequestExecutor {
                     startedAt,
                     assertions
             );
-        } catch (IOException | InterruptedException | IllegalArgumentException exception) {
+        } catch (Exception exception) {
             if (exception instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
             }
             long durationMillis = Duration.between(startedAt, Instant.now()).toMillis();
+            String errorMsg = exception.getMessage() != null ? exception.getMessage() : exception.getClass().getSimpleName();
             return new ExecutionResult(
                     request.folderPath(),
                     request.name(),
@@ -206,7 +207,7 @@ public final class RequestExecutor {
                     0,
                     durationMillis,
                     false,
-                    exception.getMessage(),
+                    errorMsg,
                     "",
                     "",
                     startedAt,

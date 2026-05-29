@@ -302,17 +302,26 @@ public final class FilterQueryParser {
 
         if (ts.matchKeyword("QT") || ts.matchKeyword("QUICK_TABLE")) {
             String title = null;
-            if (ts.peekType(TokenType.STRING) || (ts.peekType(TokenType.IDENT) && !ts.peekText().equalsIgnoreCase("HEADERS") && !ts.peekText().equalsIgnoreCase("ROW"))) {
+            if (ts.peekType(TokenType.STRING) || (ts.peekType(TokenType.IDENT) && !ts.peekText().equalsIgnoreCase("HEADERS") && !ts.peekText().equalsIgnoreCase("ROW") && !ts.peekText().equalsIgnoreCase("COLUMNS"))) {
                 title = ts.readValue();
             }
             List<String> headers = null;
-            if (ts.matchKeyword("HEADERS")) {
+            if (ts.matchKeyword("HEADERS") || ts.matchKeyword("COLUMNS")) {
                 headers = ts.readCommaSeparatedValues();
             }
             List<SummaryItem.InlineTableRow> rows = new ArrayList<>();
             while (ts.matchKeyword("ROW")) {
-                String rowLabel = ts.readValue();
-                rows.add(new SummaryItem.InlineTableRow(rowLabel, parseSummaryTextExpr(ts)));
+                List<List<SummaryTextPart>> columnParts = parseMultiColumnRow(ts, headers);
+                if (columnParts != null) {
+                    // Multi-column mode: each column has its own text parts
+                    String rowLabel = columnParts.isEmpty() ? "" : renderFirstColumnLabel(columnParts.get(0));
+                    List<SummaryTextPart> valueParts = columnParts.size() > 1 ? columnParts.get(1) : List.of();
+                    rows.add(new SummaryItem.InlineTableRow(rowLabel, valueParts, columnParts));
+                } else {
+                    // Classic 2-column mode: label + value expression
+                    String rowLabel = ts.readValue();
+                    rows.add(new SummaryItem.InlineTableRow(rowLabel, parseSummaryTextExpr(ts)));
+                }
             }
             if (headers == null) {
                 b.summaryItems.add(new SummaryItem.QuickTable(title, rows));
@@ -327,7 +336,13 @@ public final class FilterQueryParser {
             return;
         }
 
-        throw ts.error("Unknown statement. Supported: COLLECTION, OUTPUT_PREFIX, REQUESTS, REQUEST, COLUMNS, FILTER, DATE_CONFIG, LOOKUP_TABLE, SHAPE, UNION, EXPAND, TITLE, DESCRIPTION, TEXT, KV, LV, TABLE, LABEL_TABLE, QT, QUICK_TABLE, METRICS, $var = FILTER ..., $var;");
+        if (ts.matchKeyword("STATUS")) {
+            String color = readOptionalColor(ts);
+            b.summaryItems.add(new SummaryItem.Status(color));
+            return;
+        }
+
+        throw ts.error("Unknown statement. Supported: COLLECTION, OUTPUT_PREFIX, REQUESTS, REQUEST, COLUMNS, FILTER, DATE_CONFIG, LOOKUP_TABLE, SHAPE, UNION, EXPAND, TITLE, DESCRIPTION, TEXT, KV, LV, TABLE, LABEL_TABLE, QT, QUICK_TABLE, METRICS, STATUS, $var = FILTER ..., $var;");
     }
 
     private static void parseSummaryDollarStatement(TokenStream ts, Builder b) {
@@ -380,8 +395,42 @@ public final class FilterQueryParser {
         throw ts.error("Expected summary variable name like $posts");
     }
 
+    /**
+     * Parses a multi-column ROW when the QuickTable has explicit HEADERS.
+     * Each column value is a text expression (literals + variables joined by +).
+     * Column values are separated by commas.
+     * Returns null when the next token is a plain string (classic 2-column mode).
+     */
+    private static List<List<SummaryTextPart>> parseMultiColumnRow(TokenStream ts, List<String> headers) {
+        if (headers == null || headers.size() <= 2) {
+            // For 0, 1, or 2 headers, use classic label+value syntax unless
+            // the row starts with an expression (no plain label string).
+            // Peek: if next is a string value followed by + or $, it might be multi-col.
+            return null;
+        }
+        // N-column mode: each column is a text expression, separated by commas.
+        List<List<SummaryTextPart>> columns = new ArrayList<>();
+        columns.add(parseSummaryTextExpr(ts));
+        while (ts.matchSymbol(",")) {
+            columns.add(parseSummaryTextExpr(ts));
+        }
+        return columns;
+    }
+
+    /** Extracts a plain-text label from the first column's text parts if it's a simple literal. */
+    private static String renderFirstColumnLabel(List<SummaryTextPart> parts) {
+        if (parts != null && parts.size() == 1 && parts.get(0) instanceof SummaryTextPart.Literal lit) {
+            return lit.value();
+        }
+        return "";
+    }
+
     private static String readOptionalColor(TokenStream ts) {
         if (ts.matchKeyword("COLOR")) {
+            // Accept both quoted strings (hex colors like "#FF5500") and identifiers (named colors)
+            if (ts.peekType(TokenType.STRING)) {
+                return ts.readValue();
+            }
             return ts.readIdentifierLike();
         }
         return null;
@@ -415,10 +464,46 @@ public final class FilterQueryParser {
     }
 
     private static SummaryTextPart readSummaryTextPart(TokenStream ts) {
+        // IF/ELSE conditional inside a text expression
+        if (ts.matchKeyword("IF")) {
+            return parseSummaryIfElse(ts);
+        }
         if (ts.matchSymbol("$")) {
             return new SummaryTextPart.Variable(ts.readIdentifierLike());
         }
         return new SummaryTextPart.Literal(ts.readValue());
+    }
+
+    /**
+     * Parses a summary IF/ELSE conditional inside a text expression.
+     * Syntax: {@code IF $variable op value THEN textExpr [ELSE textExpr]}
+     * Where {@code op} is =, !=, &gt;, &gt;=, &lt;, &lt;=.
+     * The THEN/ELSE branches are full text expressions (can use +, $vars, nested IF).
+     *
+     * <p>Examples:
+     * <pre>
+     *   IF $count > 0 THEN $count + " found" ELSE "none found"
+     *   IF $success = true THEN "All passed" ELSE "Some failed"
+     * </pre>
+     */
+    private static SummaryTextPart.IfElse parseSummaryIfElse(TokenStream ts) {
+        // Condition: $variable op value
+        if (!ts.matchSymbol("$")) {
+            throw ts.error("Expected $variable after IF in summary expression");
+        }
+        String variableName = ts.readIdentifierLike();
+        String op = ts.readSymbolOp();
+        String value = ts.readValue();
+
+        ts.expectKeyword("THEN");
+        List<SummaryTextPart> thenParts = parseSummaryTextExpr(ts);
+
+        List<SummaryTextPart> elseParts = List.of();
+        if (ts.matchKeyword("ELSE")) {
+            elseParts = parseSummaryTextExpr(ts);
+        }
+
+        return new SummaryTextPart.IfElse(variableName, op, value, thenParts, elseParts);
     }
 
     private static List<SortSpec> parseOrderBy(TokenStream ts) {
@@ -482,6 +567,14 @@ public final class FilterQueryParser {
             collectRules(notExpr.target(), out, ts);
             return;
         }
+        if (expr instanceof IfElseExpr ifElse) {
+            collectRules(ifElse.condition(), out, ts);
+            collectRules(ifElse.thenExpr(), out, ts);
+            if (ifElse.elseExpr() != null) {
+                collectRules(ifElse.elseExpr(), out, ts);
+            }
+            return;
+        }
         throw ts.error("Unsupported WHERE expression while collecting rules.");
     }
 
@@ -499,6 +592,13 @@ public final class FilterQueryParser {
         }
         if (expr instanceof NotExpr notExpr) {
             return new RowFilterExpression.Not(toExpression(notExpr.target(), ts));
+        }
+        if (expr instanceof IfElseExpr ifElse) {
+            RowFilterExpression condition = toExpression(ifElse.condition(), ts);
+            RowFilterExpression thenExpr = toExpression(ifElse.thenExpr(), ts);
+            RowFilterExpression elseExpr = ifElse.elseExpr() != null
+                    ? toExpression(ifElse.elseExpr(), ts) : null;
+            return new RowFilterExpression.IfElse(condition, thenExpr, elseExpr);
         }
         throw ts.error("Unsupported WHERE expression while building expression tree.");
     }
@@ -527,12 +627,45 @@ public final class FilterQueryParser {
         if (ts.matchKeyword("NOT")) {
             return new NotExpr(parseUnary(ts));
         }
+        if (ts.matchKeyword("IF")) {
+            return parseIfElse(ts);
+        }
         if (ts.matchSymbol("(")) {
             Expr expr = parseExpr(ts);
             ts.expectSymbol(")");
             return expr;
         }
         return parsePredicate(ts);
+    }
+
+    /**
+     * Parses an IF/ELSE conditional expression.
+     * Syntax: IF &lt;predicate&gt; THEN ( &lt;expr&gt; ) [ELSE ( &lt;expr&gt; )]
+     * The condition is a standard predicate (field op value).
+     * THEN and ELSE branches are full sub-expressions (can contain AND/OR/NOT/IF).
+     * Parentheses around the branches are optional but recommended.
+     */
+    private static Expr parseIfElse(TokenStream ts) {
+        // Parse the condition: a standard predicate expression (can be parenthesized)
+        Expr condition = parseOr(ts);
+        ts.expectKeyword("THEN");
+        Expr thenExpr;
+        if (ts.matchSymbol("(")) {
+            thenExpr = parseExpr(ts);
+            ts.expectSymbol(")");
+        } else {
+            thenExpr = parseOr(ts);
+        }
+        Expr elseExpr = null;
+        if (ts.matchKeyword("ELSE")) {
+            if (ts.matchSymbol("(")) {
+                elseExpr = parseExpr(ts);
+                ts.expectSymbol(")");
+            } else {
+                elseExpr = parseOr(ts);
+            }
+        }
+        return new IfElseExpr(condition, thenExpr, elseExpr);
     }
 
     private static Expr parsePredicate(TokenStream ts) {
@@ -779,7 +912,7 @@ public final class FilterQueryParser {
         }
     }
 
-    private sealed interface Expr permits BinaryExpr, NotExpr, PredicateExpr {
+    private sealed interface Expr permits BinaryExpr, NotExpr, PredicateExpr, IfElseExpr {
     }
 
     private record BinaryExpr(Expr left, BinaryOp operator, Expr right) implements Expr {
@@ -790,6 +923,9 @@ public final class FilterQueryParser {
     }
 
     private record NotExpr(Expr target) implements Expr {
+    }
+
+    private record IfElseExpr(Expr condition, Expr thenExpr, Expr elseExpr) implements Expr {
     }
 
     private record PredicateExpr(RowFilterRule rule) implements Expr {

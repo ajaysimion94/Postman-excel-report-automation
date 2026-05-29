@@ -9,6 +9,9 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class FilterQueryParserTest {
@@ -237,5 +240,207 @@ class FilterQueryParserTest {
                 """);
 
         assertThrows(IllegalArgumentException.class, () -> FilterQueryParser.parse(file));
+    }
+
+    // ── New feature tests ────────────────────────────────────────────────────────
+
+    @Test
+    void parsesStatusKeyword() throws Exception {
+        Path file = Files.createTempFile("status", ".filter");
+        Files.writeString(file, """
+                REQUESTS "List posts";
+                METRICS;
+                STATUS;
+                STATUS COLOR "#FF5500";
+                """);
+
+        FilterSpec spec = FilterQueryParser.parse(file);
+        assertNotNull(spec.summary());
+        assertEquals(3, spec.summary().items().size());
+
+        // First STATUS item
+        SummaryItem.Status status1 = (SummaryItem.Status) spec.summary().items().get(1);
+        assertNull(status1.colorName());
+
+        // Second STATUS item with hex color
+        SummaryItem.Status status2 = (SummaryItem.Status) spec.summary().items().get(2);
+        assertEquals("#FF5500", status2.colorName());
+    }
+
+    @Test
+    void parsesQuickTableWithMultipleColumns() throws Exception {
+        Path file = Files.createTempFile("qt-multi", ".filter");
+        Files.writeString(file, """
+                REQUESTS "List posts";
+                QT "Summary" HEADERS Name, Score, Grade
+                  ROW "Alice", $count + "items", "A"
+                  ROW "Bob", $count + "items", "B";
+                """);
+
+        FilterSpec spec = FilterQueryParser.parse(file);
+        assertNotNull(spec.summary());
+        SummaryItem.QuickTable qt = (SummaryItem.QuickTable) spec.summary().items().get(0);
+        assertEquals("Summary", qt.title());
+        assertEquals(List.of("Name", "Score", "Grade"), qt.headers());
+        assertEquals(2, qt.rows().size());
+    }
+
+    @Test
+    void parsesQuickTableWithCOLUMNSAlias() throws Exception {
+        Path file = Files.createTempFile("qt-columns", ".filter");
+        Files.writeString(file, """
+                REQUESTS "List posts";
+                QT COLUMNS Col1, Col2, Col3, Col4
+                  ROW "A", "B", "C", "D";
+                """);
+
+        FilterSpec spec = FilterQueryParser.parse(file);
+        SummaryItem.QuickTable qt = (SummaryItem.QuickTable) spec.summary().items().get(0);
+        assertEquals(List.of("Col1", "Col2", "Col3", "Col4"), qt.headers());
+    }
+
+    @Test
+    void parsesIfElseInWhereClause() throws Exception {
+        Path file = Files.createTempFile("ifelse", ".filter");
+        Files.writeString(file, "FILTER * WHERE IF priority = high THEN (severity > 7) ELSE (severity > 3);");
+
+        FilterSpec spec = FilterQueryParser.parse(file);
+        RowFilterGroup group = spec.rowFilters().get("*");
+        assertNotNull(group.expression());
+        assertTrue(group.expression() instanceof RowFilterExpression.IfElse);
+        RowFilterExpression.IfElse ifElse = (RowFilterExpression.IfElse) group.expression();
+        assertTrue(ifElse.condition() instanceof RowFilterExpression.Predicate);
+        assertTrue(ifElse.thenExpr() instanceof RowFilterExpression.Predicate);
+        assertNotNull(ifElse.elseExpr());
+        assertTrue(ifElse.elseExpr() instanceof RowFilterExpression.Predicate);
+    }
+
+    @Test
+    void parsesIfElseWithoutElse() throws Exception {
+        Path file = Files.createTempFile("ifelse-noelse", ".filter");
+        Files.writeString(file, "FILTER * WHERE IF status = active THEN (score > 50);");
+
+        FilterSpec spec = FilterQueryParser.parse(file);
+        RowFilterGroup group = spec.rowFilters().get("*");
+        RowFilterExpression.IfElse ifElse = (RowFilterExpression.IfElse) group.expression();
+        assertNull(ifElse.elseExpr());
+    }
+
+    @Test
+    void parsesIfElseNestedInAnd() throws Exception {
+        Path file = Files.createTempFile("ifelse-and", ".filter");
+        Files.writeString(file, "FILTER * WHERE IF type = A THEN (val > 10) ELSE (val > 5) AND category = premium;");
+
+        FilterSpec spec = FilterQueryParser.parse(file);
+        RowFilterGroup group = spec.rowFilters().get("*");
+        // The AND should combine the IF/ELSE with the category predicate
+        assertTrue(group.expression() instanceof RowFilterExpression.And);
+    }
+
+    @Test
+    void parsesColorWithHexValue() throws Exception {
+        Path file = Files.createTempFile("hex-color", ".filter");
+        Files.writeString(file, """
+                REQUESTS "List posts";
+                TITLE "Report" COLOR "#336699";
+                DESCRIPTION "Note" COLOR "FF4400";
+                """);
+
+        FilterSpec spec = FilterQueryParser.parse(file);
+        SummaryItem.Title title = (SummaryItem.Title) spec.summary().items().get(0);
+        assertEquals("#336699", title.colorName());
+
+        SummaryItem.Description desc = (SummaryItem.Description) spec.summary().items().get(1);
+        assertEquals("FF4400", desc.colorName());
+    }
+
+    // ── Summary IF/ELSE tests ──────────────────────────────────────────────────────
+
+    @Test
+    void parsesIfElseInSummaryText() throws Exception {
+        Path file = Files.createTempFile("summary-if", ".filter");
+        Files.writeString(file, """
+                REQUESTS "List posts";
+                $POSTS = FILTER "List posts" WHERE id > 0;
+                TEXT IF $POSTS > 0 THEN $POSTS + " found" ELSE "none found";
+                """);
+
+        FilterSpec spec = FilterQueryParser.parse(file);
+        assertNotNull(spec.summary());
+        SummaryItem.Text text = (SummaryItem.Text) spec.summary().items().get(0);
+        assertEquals(1, text.parts().size());
+        assertTrue(text.parts().get(0) instanceof SummaryTextPart.IfElse);
+        SummaryTextPart.IfElse ifElse = (SummaryTextPart.IfElse) text.parts().get(0);
+        assertEquals("POSTS", ifElse.variableName());
+        assertEquals(">", ifElse.op());
+        assertEquals("0", ifElse.value());
+        assertEquals(2, ifElse.thenParts().size()); // $POSTS + " found"
+        assertEquals(1, ifElse.elseParts().size()); // "none found"
+    }
+
+    @Test
+    void parsesIfElseInKeyValue() throws Exception {
+        Path file = Files.createTempFile("kv-if", ".filter");
+        Files.writeString(file, """
+                REQUESTS "List posts";
+                $POSTS = FILTER "List posts" WHERE id > 0;
+                KV "Status" IF $POSTS > 0 THEN "Has posts" ELSE "Empty";
+                """);
+
+        FilterSpec spec = FilterQueryParser.parse(file);
+        SummaryItem.KeyValue kv = (SummaryItem.KeyValue) spec.summary().items().get(0);
+        assertEquals("Status", kv.label());
+        assertTrue(kv.valueParts().get(0) instanceof SummaryTextPart.IfElse);
+    }
+
+    @Test
+    void parsesIfElseInQuickTable() throws Exception {
+        Path file = Files.createTempFile("qt-if", ".filter");
+        Files.writeString(file, """
+                REQUESTS "List posts";
+                $POSTS = FILTER "List posts" WHERE id > 0;
+                QT "Results" HEADERS Name, Level, Value
+                  ROW "Count", IF $POSTS > 100 THEN "High" ELSE "Low", $POSTS;
+                """);
+
+        FilterSpec spec = FilterQueryParser.parse(file);
+        SummaryItem.QuickTable qt = (SummaryItem.QuickTable) spec.summary().items().get(0);
+        // Multi-column mode: third column is a variable
+        List<List<SummaryTextPart>> cols = qt.rows().get(0).effectiveColumns();
+        // Second column should contain IfElse
+        assertTrue(cols.get(1).get(0) instanceof SummaryTextPart.IfElse);
+    }
+
+    @Test
+    void parsesIfElseWithoutElseInSummary() throws Exception {
+        Path file = Files.createTempFile("summary-if-noelse", ".filter");
+        Files.writeString(file, """
+                REQUESTS "List posts";
+                $POSTS = FILTER "List posts" WHERE id > 0;
+                TEXT IF $POSTS = 0 THEN "No data";
+                """);
+
+        FilterSpec spec = FilterQueryParser.parse(file);
+        SummaryItem.Text text = (SummaryItem.Text) spec.summary().items().get(0);
+        SummaryTextPart.IfElse ifElse = (SummaryTextPart.IfElse) text.parts().get(0);
+        assertEquals(0, ifElse.elseParts().size()); // No ELSE → empty
+    }
+
+    @Test
+    void parsesNestedIfElseInSummary() throws Exception {
+        Path file = Files.createTempFile("nested-if", ".filter");
+        Files.writeString(file, """
+                REQUESTS "List posts";
+                $POSTS = FILTER "List posts" WHERE id > 0;
+                TEXT IF $POSTS > 100 THEN IF $POSTS > 500 THEN "Very High" ELSE "High" ELSE "Low";
+                """);
+
+        FilterSpec spec = FilterQueryParser.parse(file);
+        SummaryItem.Text text = (SummaryItem.Text) spec.summary().items().get(0);
+        SummaryTextPart.IfElse outer = (SummaryTextPart.IfElse) text.parts().get(0);
+        // THEN branch contains a nested IF
+        assertTrue(outer.thenParts().get(0) instanceof SummaryTextPart.IfElse);
+        SummaryTextPart.IfElse inner = (SummaryTextPart.IfElse) outer.thenParts().get(0);
+        assertEquals("500", inner.value());
     }
 }

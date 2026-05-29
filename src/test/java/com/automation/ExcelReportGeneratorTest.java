@@ -478,4 +478,164 @@ class ExcelReportGeneratorTest {
             assertTrue(spec.summary().items().stream().anyMatch(SummaryItem.Table.class::isInstance));
         }
     }
+
+    @Test
+    void statusSummaryItemShowsRequestStatus() throws Exception {
+        Path filterFile = Files.createTempFile("status-filter", ".filter");
+        Files.writeString(filterFile, """
+                REQUESTS "List Posts", "List Users";
+                METRICS;
+                STATUS;
+                """);
+        FilterSpec spec = FilterQueryParser.parse(filterFile);
+        Path output = Files.createTempFile("report-status", ".xlsx");
+        RuntimeConfig config = new RuntimeConfig(output, null, output, true, Map.of(), spec);
+        PostmanCollection collection = new PostmanCollection("Demo", Map.of(), List.of());
+
+        List<ExecutionResult> results = List.of(
+                new ExecutionResult("Root", "List Posts", "GET", "https://example.com/posts",
+                        200, 50, true, "", "[]", "[]", Instant.now(), List.of()),
+                new ExecutionResult("Root", "List Users", "GET", "https://example.com/users",
+                        500, 120, false, "Timeout", "", "", Instant.now(), List.of())
+        );
+
+        new ExcelReportGenerator().generate(collection, results, config, new RequestExecutor());
+
+        try (InputStream is = Files.newInputStream(output);
+             XSSFWorkbook wb = new XSSFWorkbook(is)) {
+            var summary = wb.getSheet("Summary");
+            assertNotNull(summary);
+            // Find the STATUS block — it should contain "Request Status" as a section header
+            boolean foundStatusHeader = false;
+            for (int i = 0; i < summary.getPhysicalNumberOfRows(); i++) {
+                var cell = summary.getRow(i).getCell(0);
+                if (cell != null && "Request Status".equals(cell.getStringCellValue())) {
+                    foundStatusHeader = true;
+                    break;
+                }
+            }
+            assertTrue(foundStatusHeader, "STATUS block should contain 'Request Status' header");
+        }
+    }
+
+    @Test
+    void quickTableWithMultipleColumnsRendersAllColumns() throws Exception {
+        Path filterFile = Files.createTempFile("qt-multi", ".filter");
+        Files.writeString(filterFile, """
+                REQUESTS "List Posts";
+                QT "Scoreboard" HEADERS Name, Score, Grade
+                  ROW "Alice", $count + "pts", "A"
+                  ROW "Bob", $count + "pts", "B";
+                METRICS;
+                """);
+        FilterSpec spec = FilterQueryParser.parse(filterFile);
+        Path output = Files.createTempFile("report-qt-multi", ".xlsx");
+        RuntimeConfig config = new RuntimeConfig(output, null, output, true, Map.of(), spec);
+        PostmanCollection collection = new PostmanCollection("Demo", Map.of(), List.of());
+
+        List<ExecutionResult> results = List.of(
+                new ExecutionResult("Root", "List Posts", "GET", "https://example.com/posts",
+                        200, 50, true, "", "[]", "[]", Instant.now(), List.of())
+        );
+
+        new ExcelReportGenerator().generate(collection, results, config, new RequestExecutor());
+
+        try (InputStream is = Files.newInputStream(output);
+             XSSFWorkbook wb = new XSSFWorkbook(is)) {
+            var summary = wb.getSheet("Summary");
+            assertNotNull(summary);
+            // Find the QuickTable header row with "Name", "Score", "Grade"
+            boolean foundHeaders = false;
+            for (int i = 0; i < summary.getPhysicalNumberOfRows(); i++) {
+                var row = summary.getRow(i);
+                if (row != null && row.getCell(0) != null && "Name".equals(row.getCell(0).getStringCellValue())
+                        && row.getCell(1) != null && "Score".equals(row.getCell(1).getStringCellValue())
+                        && row.getCell(2) != null && "Grade".equals(row.getCell(2).getStringCellValue())) {
+                    foundHeaders = true;
+                    break;
+                }
+            }
+            assertTrue(foundHeaders, "QuickTable should have 3-column headers: Name, Score, Grade");
+        }
+    }
+
+    @Test
+    void summaryIfElseRendersCorrectBranch() throws Exception {
+        Path filterFile = Files.createTempFile("summary-ifelse", ".filter");
+        Files.writeString(filterFile, """
+                REQUESTS "List Posts";
+                $POSTS = FILTER "List Posts" WHERE id > 0;
+                KV "Result" IF $POSTS > 0 THEN $POSTS + " posts found" ELSE "No posts found";
+                """);
+        FilterSpec spec = FilterQueryParser.parse(filterFile);
+        Path output = Files.createTempFile("report-ifelse", ".xlsx");
+        RuntimeConfig config = new RuntimeConfig(output, null, output, true, Map.of(), spec);
+        PostmanCollection collection = new PostmanCollection("Demo", Map.of(), List.of());
+
+        // 3 posts in the response → $POSTS resolves to row count = 3 (> 0 → THEN branch)
+        String body = "[{\"id\":1,\"title\":\"A\"},{\"id\":2,\"title\":\"B\"},{\"id\":3,\"title\":\"C\"}]";
+        List<ExecutionResult> results = List.of(
+                new ExecutionResult("Root", "List Posts", "GET", "https://example.com/posts",
+                        200, 50, true, "", body, body, Instant.now(), List.of())
+        );
+
+        new ExcelReportGenerator().generate(collection, results, config, new RequestExecutor());
+
+        try (InputStream is = Files.newInputStream(output);
+             XSSFWorkbook wb = new XSSFWorkbook(is)) {
+            var summary = wb.getSheet("Summary");
+            assertNotNull(summary);
+            // Find the KV row with label "Result"
+            boolean foundIfElseResult = false;
+            for (int i = 0; i < summary.getPhysicalNumberOfRows(); i++) {
+                var row = summary.getRow(i);
+                if (row != null && row.getCell(0) != null && "Result".equals(row.getCell(0).getStringCellValue())) {
+                    String value = row.getCell(1).getStringCellValue();
+                    // $POSTS = 3, condition 3 > 0 is true → THEN: "3 posts found"
+                    assertEquals("3 posts found", value);
+                    foundIfElseResult = true;
+                    break;
+                }
+            }
+            assertTrue(foundIfElseResult, "Should find the IF/ELSE KV row");
+        }
+    }
+
+    @Test
+    void summaryIfElseRendersElseBranchWhenConditionFails() throws Exception {
+        Path filterFile = Files.createTempFile("summary-ifelse-else", ".filter");
+        Files.writeString(filterFile, """
+                REQUESTS "List Posts";
+                $POSTS = FILTER "List Posts" WHERE id > 999;
+                KV "Result" IF $POSTS > 0 THEN $POSTS + " posts found" ELSE "No posts found";
+                """);
+        FilterSpec spec = FilterQueryParser.parse(filterFile);
+        Path output = Files.createTempFile("report-ifelse-else", ".xlsx");
+        RuntimeConfig config = new RuntimeConfig(output, null, output, true, Map.of(), spec);
+        PostmanCollection collection = new PostmanCollection("Demo", Map.of(), List.of());
+
+        // No posts match id > 999 → $POSTS = 0 (0 is not > 0 → ELSE branch)
+        String body = "[{\"id\":1,\"title\":\"A\"},{\"id\":2,\"title\":\"B\"}]";
+        List<ExecutionResult> results = List.of(
+                new ExecutionResult("Root", "List Posts", "GET", "https://example.com/posts",
+                        200, 50, true, "", body, body, Instant.now(), List.of())
+        );
+
+        new ExcelReportGenerator().generate(collection, results, config, new RequestExecutor());
+
+        try (InputStream is = Files.newInputStream(output);
+             XSSFWorkbook wb = new XSSFWorkbook(is)) {
+            var summary = wb.getSheet("Summary");
+            assertNotNull(summary);
+            for (int i = 0; i < summary.getPhysicalNumberOfRows(); i++) {
+                var row = summary.getRow(i);
+                if (row != null && row.getCell(0) != null && "Result".equals(row.getCell(0).getStringCellValue())) {
+                    String value = row.getCell(1).getStringCellValue();
+                    assertEquals("No posts found", value);
+                    return;
+                }
+            }
+            throw new AssertionError("Should find the IF/ELSE KV row");
+        }
+    }
 }
