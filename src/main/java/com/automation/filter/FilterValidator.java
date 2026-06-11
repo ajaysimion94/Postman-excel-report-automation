@@ -305,6 +305,67 @@ public final class FilterValidator {
             }
         }
 
+        Set<String> setOpNames = new java.util.HashSet<>();
+        if (filter.setOps() != null) {
+            for (int i = 0; i < filter.setOps().size(); i++) {
+                SetOpSpec op = filter.setOps().get(i);
+                String opLabel = "setOps[" + i + "]";
+                if (op.name() == null || op.name().isBlank()) {
+                    throw new IllegalArgumentException(opLabel + " must have a non-blank name.");
+                }
+                if (!setOpNames.add(op.name())) {
+                    throw new IllegalArgumentException("Filter setOps has duplicate name: \"" + op.name() + "\".");
+                }
+                String type = op.type().toUpperCase();
+                if (!Set.of("INTERSECT", "EXCEPT", "DIFF").contains(type)) {
+                    throw new IllegalArgumentException(opLabel + " (\"" + op.name() + "\") has unknown type \"" + op.type() + "\". Use INTERSECT, EXCEPT, or DIFF.");
+                }
+                if (op.sources() == null || op.sources().size() < 2) {
+                    throw new IllegalArgumentException(opLabel + " (\"" + op.name() + "\") must include at least 2 sources.");
+                }
+                for (String source : op.sources()) {
+                    if (source == null || source.isBlank()) {
+                        throw new IllegalArgumentException(opLabel + " (\"" + op.name() + "\") has a blank source entry.");
+                    }
+                    if (!available.contains(source)) {
+                        throw new IllegalArgumentException(
+                                opLabel + " (\"" + op.name() + "\") source \"" + source +
+                                        "\" is not in the collection. Available: " + available);
+                    }
+                }
+            }
+        }
+
+        Set<String> compareNames = new java.util.HashSet<>();
+        if (filter.compares() != null) {
+            for (int i = 0; i < filter.compares().size(); i++) {
+                CompareSpec cmp = filter.compares().get(i);
+                String cmpLabel = "compares[" + i + "]";
+                if (cmp.name() == null || cmp.name().isBlank()) {
+                    throw new IllegalArgumentException(cmpLabel + " must have a non-blank name.");
+                }
+                if (!compareNames.add(cmp.name())) {
+                    throw new IllegalArgumentException("Filter compares has duplicate name: \"" + cmp.name() + "\".");
+                }
+                if (cmp.field() == null || cmp.field().isBlank()) {
+                    throw new IllegalArgumentException(cmpLabel + " (\"" + cmp.name() + "\") must specify a non-blank field.");
+                }
+                if (cmp.sources() == null || cmp.sources().size() < 2) {
+                    throw new IllegalArgumentException(cmpLabel + " (\"" + cmp.name() + "\") must include at least 2 sources.");
+                }
+                for (String source : cmp.sources()) {
+                    if (source == null || source.isBlank()) {
+                        throw new IllegalArgumentException(cmpLabel + " (\"" + cmp.name() + "\") has a blank source entry.");
+                    }
+                    if (!available.contains(source)) {
+                        throw new IllegalArgumentException(
+                                cmpLabel + " (\"" + cmp.name() + "\") source \"" + source +
+                                        "\" is not in the collection. Available: " + available);
+                    }
+                }
+            }
+        }
+
         // Validate dataShapes
         if (filter.dataShapes() != null && !filter.dataShapes().isEmpty()) {
             List<String> invalidShapeKeys = new ArrayList<>();
@@ -315,7 +376,7 @@ public final class FilterValidator {
                     continue;
                 }
                 if (!"*".equals(key) && !available.contains(key) && !customTableNames.contains(key)) {
-                    if (!unionNames.contains(key)) {
+                    if (!unionNames.contains(key) && !setOpNames.contains(key) && !compareNames.contains(key)) {
                     invalidShapeKeys.add(key);
                     }
                 }

@@ -12,6 +12,8 @@ import com.automation.filter.SortSpec;
 import com.automation.filter.SummaryItem;
 import com.automation.filter.AggregateSpec;
 import com.automation.filter.ExpandSpec;
+import com.automation.filter.SetOpSpec;
+import com.automation.filter.CompareSpec;
 import com.automation.http.RequestExecutor;
 import com.automation.model.ExecutionResult;
 import com.automation.model.RuntimeConfig;
@@ -411,6 +413,143 @@ class ExcelReportGeneratorTest {
                     assertEquals(6, allSheet.getPhysicalNumberOfRows());
                 }
             }
+
+    @Test
+    void intersectSheetShowsOnlyCommonRows() throws Exception {
+        Path output = Files.createTempFile("report-intersect", ".xlsx");
+        FilterSpec spec = new FilterSpec(
+                null, null, null, null, null, null,
+                null, null, null,
+                null, null, null, null,
+                List.of(new SetOpSpec("CommonRows", "INTERSECT", List.of("Req A", "Req B"))),
+                null
+        );
+
+        RuntimeConfig config = new RuntimeConfig(output, null, output, true, Map.of(), spec);
+        PostmanCollection collection = new PostmanCollection("Demo", Map.of(), List.of());
+
+        String a = "[{\"id\":1,\"name\":\"X\"},{\"id\":2,\"name\":\"Y\"},{\"id\":3,\"name\":\"Z\"}]";
+        String b = "[{\"id\":2,\"name\":\"Y\"},{\"id\":3,\"name\":\"Z\"},{\"id\":4,\"name\":\"W\"}]";
+        List<ExecutionResult> results = List.of(
+                new ExecutionResult("Root", "Req A", "GET", "https://example.com/a",
+                        200, 10, true, "", a, a, Instant.now(), List.of()),
+                new ExecutionResult("Root", "Req B", "GET", "https://example.com/b",
+                        200, 10, true, "", b, b, Instant.now(), List.of())
+        );
+
+        new ExcelReportGenerator().generate(collection, results, config, new RequestExecutor());
+
+        try (InputStream is = Files.newInputStream(output);
+             XSSFWorkbook wb = new XSSFWorkbook(is)) {
+            var sheet = wb.getSheet("CommonRows");
+            assertNotNull(sheet);
+            // title + header + 2 common rows (id=2 and id=3)
+            assertEquals(4, sheet.getPhysicalNumberOfRows());
+        }
+    }
+
+    @Test
+    void exceptSheetShowsOnlyRowsInFirstSource() throws Exception {
+        Path output = Files.createTempFile("report-except", ".xlsx");
+        FilterSpec spec = new FilterSpec(
+                null, null, null, null, null, null,
+                null, null, null,
+                null, null, null, null,
+                List.of(new SetOpSpec("OnlyInA", "EXCEPT", List.of("Req A", "Req B"))),
+                null
+        );
+
+        RuntimeConfig config = new RuntimeConfig(output, null, output, true, Map.of(), spec);
+        PostmanCollection collection = new PostmanCollection("Demo", Map.of(), List.of());
+
+        String a = "[{\"id\":1,\"name\":\"X\"},{\"id\":2,\"name\":\"Y\"},{\"id\":3,\"name\":\"Z\"}]";
+        String b = "[{\"id\":2,\"name\":\"Y\"},{\"id\":3,\"name\":\"Z\"},{\"id\":4,\"name\":\"W\"}]";
+        List<ExecutionResult> results = List.of(
+                new ExecutionResult("Root", "Req A", "GET", "https://example.com/a",
+                        200, 10, true, "", a, a, Instant.now(), List.of()),
+                new ExecutionResult("Root", "Req B", "GET", "https://example.com/b",
+                        200, 10, true, "", b, b, Instant.now(), List.of())
+        );
+
+        new ExcelReportGenerator().generate(collection, results, config, new RequestExecutor());
+
+        try (InputStream is = Files.newInputStream(output);
+             XSSFWorkbook wb = new XSSFWorkbook(is)) {
+            var sheet = wb.getSheet("OnlyInA");
+            assertNotNull(sheet);
+            // title + header + 1 row (id=1, only in Req A)
+            assertEquals(3, sheet.getPhysicalNumberOfRows());
+        }
+    }
+
+    @Test
+    void diffSheetShowsUniqueRowsPerSourceWithSectionLabels() throws Exception {
+        Path output = Files.createTempFile("report-diff", ".xlsx");
+        FilterSpec spec = new FilterSpec(
+                null, null, null, null, null, null,
+                null, null, null,
+                null, null, null, null,
+                List.of(new SetOpSpec("Mismatches", "DIFF", List.of("Req A", "Req B"))),
+                null
+        );
+
+        RuntimeConfig config = new RuntimeConfig(output, null, output, true, Map.of(), spec);
+        PostmanCollection collection = new PostmanCollection("Demo", Map.of(), List.of());
+
+        String a = "[{\"id\":1,\"name\":\"X\"},{\"id\":2,\"name\":\"Y\"},{\"id\":3,\"name\":\"Z\"}]";
+        String b = "[{\"id\":2,\"name\":\"Y\"},{\"id\":3,\"name\":\"Z\"},{\"id\":4,\"name\":\"W\"}]";
+        List<ExecutionResult> results = List.of(
+                new ExecutionResult("Root", "Req A", "GET", "https://example.com/a",
+                        200, 10, true, "", a, a, Instant.now(), List.of()),
+                new ExecutionResult("Root", "Req B", "GET", "https://example.com/b",
+                        200, 10, true, "", b, b, Instant.now(), List.of())
+        );
+
+        new ExcelReportGenerator().generate(collection, results, config, new RequestExecutor());
+
+        try (InputStream is = Files.newInputStream(output);
+             XSSFWorkbook wb = new XSSFWorkbook(is)) {
+            var sheet = wb.getSheet("Mismatches");
+            assertNotNull(sheet);
+            // title + header + section label "Req A" + 1 data row (id=1)
+            //   + section label "Req B" + 1 data row (id=4) = 6 rows
+            assertEquals(6, sheet.getPhysicalNumberOfRows());
+        }
+    }
+
+    @Test
+    void compareSheetShowsValueMatrixAcrossSources() throws Exception {
+        Path output = Files.createTempFile("report-compare", ".xlsx");
+        FilterSpec spec = new FilterSpec(
+                null, null, null, null, null, null,
+                null, null, null,
+                null, null, null, null,
+                null,
+                List.of(new CompareSpec("IdCompare", "id", List.of("Req A", "Req B")))
+        );
+
+        RuntimeConfig config = new RuntimeConfig(output, null, output, true, Map.of(), spec);
+        PostmanCollection collection = new PostmanCollection("Demo", Map.of(), List.of());
+
+        String a = "[{\"id\":1,\"name\":\"X\"},{\"id\":2,\"name\":\"Y\"},{\"id\":3,\"name\":\"Z\"}]";
+        String b = "[{\"id\":2,\"name\":\"Y\"},{\"id\":3,\"name\":\"Z\"},{\"id\":4,\"name\":\"W\"}]";
+        List<ExecutionResult> results = List.of(
+                new ExecutionResult("Root", "Req A", "GET", "https://example.com/a",
+                        200, 10, true, "", a, a, Instant.now(), List.of()),
+                new ExecutionResult("Root", "Req B", "GET", "https://example.com/b",
+                        200, 10, true, "", b, b, Instant.now(), List.of())
+        );
+
+        new ExcelReportGenerator().generate(collection, results, config, new RequestExecutor());
+
+        try (InputStream is = Files.newInputStream(output);
+             XSSFWorkbook wb = new XSSFWorkbook(is)) {
+            var sheet = wb.getSheet("IdCompare");
+            assertNotNull(sheet);
+            // title + header + 4 unique values (1,2,3,4)
+            assertEquals(6, sheet.getPhysicalNumberOfRows());
+        }
+    }
 
     @Test
     void columnRenameAppliesDisplayHeadersOnResponseSheet() throws Exception {

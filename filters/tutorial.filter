@@ -38,6 +38,14 @@ UNION "PostsAndUsersAll" FROM "List posts", "List users" ALL;
 # 9) Apply shape to a union output sheet
 SHAPE "PostsAndUsersDistinct" ORDER BY id ASC LIMIT 200;
 
+# 10) Set operations — INTERSECT (common rows), EXCEPT (rows only in first source), DIFF (symmetric)
+INTERSECT CommonPosts FROM "List posts", "List users";
+EXCEPT  PostsOnly FROM "List posts", "List users";
+DIFF    PostMismatches FROM "List posts", "List users";
+
+# 11) Column-wise comparison — shows value matrix with _in_<source> boolean columns and _count
+COMPARE IdCompare ON id FROM "List posts", "List users";
+
 # NOTE:
 # - If your collection does not contain these request names, replace them.
 # - If fields like archived or createdAt do not exist in your API, remove/edit those rules.

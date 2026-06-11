@@ -1,0 +1,45 @@
+# Set Operations Demo — INTERSECT, EXCEPT, DIFF, COMPARE
+#
+# Demonstrates all four set-like operations for comparing
+# response data across multiple requests.
+#
+# Adjust collection name and request names to match yours.
+
+# ── Collection setup ──
+COLLECTION jsonplaceholder;
+REQUESTS "List posts", "List users", "List archived posts";
+OUTPUT_PREFIX set-ops-demo;
+
+# ── Column projection ──
+COLUMNS "List posts": id, userId, title, body;
+COLUMNS "List users": id, name, email;
+COLUMNS "List archived posts": id, userId, title;
+
+# ── Row filters ──
+FILTER "List posts" WHERE id > 0;
+
+# ── INTERSECT: rows that exist in ALL specified sources ──
+# Output: _source=ALL, _in_<source>=true for each
+# Use this to find records that are the same across endpoints.
+INTERSECT ActiveAndArchived FROM "List posts", "List archived posts";
+
+# ── EXCEPT: rows in first source NOT in any subsequent source ──
+# Output: _source=<first_source>, _in_<first_source>=true, _in_<other>=false
+# Use this to find rows that ONLY exist in the first source.
+EXCEPT ActiveOnly FROM "List posts", "List archived posts";
+
+# ── DIFF: symmetric difference — rows unique to EACH source ──
+# Output grouped by source with section label rows.
+# Use this for a complete mismatch report: shows what's unique to each side.
+DIFF PostMismatches FROM "List posts", "List archived posts";
+
+# ── COMPARE: column value matrix across sources ──
+# Output: value | _in_source1 | _in_source2 | ... | _count
+# Use this to compare which values of a field appear in which sources.
+COMPARE IdCompare ON id FROM "List posts", "List users", "List archived posts";
+
+# ── Apply shapes to outputs ──
+SHAPE "ActiveAndArchived" ORDER BY id ASC;
+SHAPE "ActiveOnly" ORDER BY id DESC;
+SHAPE "PostMismatches" ORDER BY id ASC;
+SHAPE "IdCompare" ORDER BY id ASC;

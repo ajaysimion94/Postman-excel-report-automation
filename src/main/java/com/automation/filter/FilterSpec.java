@@ -122,7 +122,17 @@ public record FilterSpec(
         /**
          * Optional customizable Summary sheet layout (title, text, embedded tables, metrics).
          */
-        SummarySpec summary
+        SummarySpec summary,
+
+        /**
+         * Optional set operations (INTERSECT / EXCEPT) on entire rows from multiple requests.
+         */
+        List<SetOpSpec> setOps,
+
+        /**
+         * Optional column-wise comparisons across multiple requests.
+         */
+        List<CompareSpec> compares
 ) {
     public FilterSpec(
             String collection,
@@ -135,7 +145,7 @@ public record FilterSpec(
             Map<String, Map<String, DateFieldConfig>> dateConfig,
             List<CustomTableSpec> customTables
     ) {
-        this(collection, requests, responseColumns, outputPrefix, auth, vars, rowFilters, dateConfig, customTables, null, null, null, null);
+        this(collection, requests, responseColumns, outputPrefix, auth, vars, rowFilters, dateConfig, customTables, null, null, null, null, null, null);
     }
 
     public FilterSpec(
@@ -150,7 +160,7 @@ public record FilterSpec(
             List<CustomTableSpec> customTables,
             Map<String, DataShapeSpec> dataShapes
     ) {
-        this(collection, requests, responseColumns, outputPrefix, auth, vars, rowFilters, dateConfig, customTables, dataShapes, null, null, null);
+        this(collection, requests, responseColumns, outputPrefix, auth, vars, rowFilters, dateConfig, customTables, dataShapes, null, null, null, null, null);
     }
 
     public FilterSpec(
@@ -166,6 +176,58 @@ public record FilterSpec(
             Map<String, DataShapeSpec> dataShapes,
             List<UnionSpec> unions
     ) {
-        this(collection, requests, responseColumns, outputPrefix, auth, vars, rowFilters, dateConfig, customTables, dataShapes, unions, null, null);
+        this(collection, requests, responseColumns, outputPrefix, auth, vars, rowFilters, dateConfig, customTables, dataShapes, unions, null, null, null, null);
+    }
+
+    public FilterSpec(
+            String collection,
+            List<String> requests,
+            Map<String, List<ColumnSpec>> responseColumns,
+            String outputPrefix,
+            FilterAuthSpec auth,
+            Map<String, String> vars,
+            Map<String, RowFilterGroup> rowFilters,
+            Map<String, Map<String, DateFieldConfig>> dateConfig,
+            List<CustomTableSpec> customTables,
+            Map<String, DataShapeSpec> dataShapes,
+            List<UnionSpec> unions,
+            Map<String, ExpandSpec> expands,
+            SummarySpec summary
+    ) {
+        this(collection, requests, responseColumns, outputPrefix, auth, vars, rowFilters, dateConfig, customTables, dataShapes, unions, expands, summary, null, null);
+    }
+
+    public FilterSpec(
+            String collection,
+            List<String> requests,
+            Map<String, List<ColumnSpec>> responseColumns,
+            String outputPrefix,
+            FilterAuthSpec auth,
+            Map<String, String> vars,
+            Map<String, RowFilterGroup> rowFilters,
+            Map<String, Map<String, DateFieldConfig>> dateConfig,
+            List<CustomTableSpec> customTables,
+            Map<String, DataShapeSpec> dataShapes,
+            List<UnionSpec> unions,
+            Map<String, ExpandSpec> expands,
+            SummarySpec summary,
+            List<SetOpSpec> setOps,
+            List<CompareSpec> compares
+    ) {
+        this.collection = collection;
+        this.requests = requests;
+        this.responseColumns = responseColumns;
+        this.outputPrefix = outputPrefix;
+        this.auth = auth;
+        this.vars = vars;
+        this.rowFilters = rowFilters;
+        this.dateConfig = dateConfig;
+        this.customTables = customTables;
+        this.dataShapes = dataShapes;
+        this.unions = unions;
+        this.expands = expands;
+        this.summary = summary;
+        this.setOps = setOps;
+        this.compares = compares;
     }
 }

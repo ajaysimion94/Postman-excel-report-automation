@@ -23,6 +23,8 @@ import com.automation.filter.SummaryQuerySpec;
 import com.automation.filter.SummarySpec;
 import com.automation.filter.SummaryTextPart;
 import com.automation.filter.UnionSpec;
+import com.automation.filter.SetOpSpec;
+import com.automation.filter.CompareSpec;
 import com.automation.http.RequestExecutor;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -118,6 +120,8 @@ public final class ExcelReportGenerator {
                     createCustomTableSheets(workbook, styleFactory, results, config.filterSpec(),
                             partSheetNames, collection, config, executor);
                     createUnionSheets(workbook, styleFactory, results, config.filterSpec(), partSheetNames);
+                    createSetOpSheets(workbook, styleFactory, results, config.filterSpec(), partSheetNames);
+                    createCompareSheets(workbook, styleFactory, results, config.filterSpec(), partSheetNames);
                     createIndexSheet(workbook, styleFactory);
                 }
 
@@ -1701,6 +1705,308 @@ public final class ExcelReportGenerator {
             if (!columnSpecs.isEmpty()) {
                 sheet.setAutoFilter(new CellRangeAddress(dataStartRow - 1, dataStartRow - 1, 0, columnSpecs.size() - 1));
             }
+            autoSize(sheet, columnSpecs.size());
+        }
+    }
+
+    private void createSetOpSheets(Workbook workbook, SheetStyleFactory styleFactory,
+                                   List<ExecutionResult> results, FilterSpec filterSpec,
+                                   Set<String> usedNames) {
+        if (filterSpec == null || filterSpec.setOps() == null || filterSpec.setOps().isEmpty()) {
+            return;
+        }
+
+        ObjectMapper mapper = new ObjectMapper();
+        Map<String, List<ObjectNode>> rowsByRequest = new LinkedHashMap<>();
+        for (ExecutionResult result : results) {
+            String body = result.responseBody();
+            if (body == null || body.isBlank()) continue;
+            try {
+                JsonNode root = mapper.readTree(body);
+                List<ObjectNode> rows = extractResponseRows(root);
+                if (!rows.isEmpty()) {
+                    rowsByRequest.put(result.requestName(), rows);
+                }
+            } catch (Exception ignored) {
+            }
+        }
+
+        for (SetOpSpec op : filterSpec.setOps()) {
+            String type = op.type().toUpperCase();
+
+            // Build per-source row sets keyed by toString() signature
+            List<String> sources = op.sources();
+            Map<String, Set<String>> sigsBySource = new LinkedHashMap<>();
+            Map<String, List<ObjectNode>> rowsBySource = new LinkedHashMap<>();
+
+            for (String source : sources) {
+                List<ObjectNode> sourceRows = new ArrayList<>(rowsByRequest.getOrDefault(source, List.of()));
+                sourceRows = applyRowFilter(sourceRows, source, filterSpec);
+                rowsBySource.put(source, sourceRows);
+                Set<String> sigs = new LinkedHashSet<>();
+                for (ObjectNode row : sourceRows) {
+                    sigs.add(row.toString());
+                }
+                sigsBySource.put(source, sigs);
+            }
+
+            // For DIFF, collect unique rows per source; for others, compute normally.
+            // outRows list holds all final rows (with provenance columns).
+            List<ObjectNode> outRows = new ArrayList<>();
+            // For DIFF, we also track which rows belong to which source group for section labels.
+            Map<String, List<ObjectNode>> groupRows = new LinkedHashMap<>();
+
+            if ("INTERSECT".equals(type)) {
+                String firstSource = sources.get(0);
+                Set<String> filteredSigs = new LinkedHashSet<>(sigsBySource.get(firstSource));
+                for (int i = 1; i < sources.size(); i++) {
+                    filteredSigs.retainAll(sigsBySource.get(sources.get(i)));
+                }
+                for (ObjectNode row : rowsBySource.get(firstSource)) {
+                    String sig = row.toString();
+                    if (!filteredSigs.contains(sig)) continue;
+                    ObjectNode out = row.deepCopy();
+                    for (String source : sources) {
+                        out.put("_in_" + source, true);
+                    }
+                    out.put("_source", "ALL");
+                    outRows.add(out);
+                }
+            } else if ("EXCEPT".equals(type)) {
+                String firstSource = sources.get(0);
+                Set<String> filteredSigs = new LinkedHashSet<>(sigsBySource.get(firstSource));
+                for (int i = 1; i < sources.size(); i++) {
+                    filteredSigs.removeAll(sigsBySource.get(sources.get(i)));
+                }
+                for (ObjectNode row : rowsBySource.get(firstSource)) {
+                    String sig = row.toString();
+                    if (!filteredSigs.contains(sig)) continue;
+                    ObjectNode out = row.deepCopy();
+                    for (String source : sources) {
+                        out.put("_in_" + source, sigsBySource.get(source).contains(sig));
+                    }
+                    out.put("_source", firstSource);
+                    outRows.add(out);
+                }
+            } else if ("DIFF".equals(type)) {
+                // Compute union of all sigs across all sources
+                Set<String> allSigs = new LinkedHashSet<>();
+                for (String source : sources) {
+                    allSigs.addAll(sigsBySource.get(source));
+                }
+                // For each source, find rows unique to that source
+                for (String source : sources) {
+                    Set<String> otherSigs = new HashSet<>();
+                    for (String other : sources) {
+                        if (!other.equals(source)) {
+                            otherSigs.addAll(sigsBySource.get(other));
+                        }
+                    }
+                    List<ObjectNode> uniqueRows = new ArrayList<>();
+                    for (ObjectNode row : rowsBySource.get(source)) {
+                        String sig = row.toString();
+                        if (otherSigs.contains(sig)) continue;
+                        ObjectNode out = row.deepCopy();
+                        for (String s : sources) {
+                            out.put("_in_" + s, sigsBySource.get(s).contains(sig));
+                        }
+                        out.put("_source", source);
+                        uniqueRows.add(out);
+                    }
+                    if (!uniqueRows.isEmpty()) {
+                        groupRows.put(source, uniqueRows);
+                        outRows.addAll(uniqueRows);
+                    }
+                }
+            }
+
+            if (outRows.isEmpty()) {
+                System.out.printf("[INFO] Set operation \"%s\" produced 0 rows — sheet skipped.%n", op.name());
+                continue;
+            }
+
+            outRows = applyDataShape(outRows, op.name(), filterSpec);
+            if ("DIFF".equals(type) && !outRows.isEmpty()) {
+                // Re-group after shape since shape may reorder/limit rows
+                groupRows.clear();
+                for (ObjectNode row : outRows) {
+                    String src = row.has("_source") ? row.get("_source").asText() : sources.get(0);
+                    groupRows.computeIfAbsent(src, k -> new ArrayList<>()).add(row);
+                }
+            }
+
+            // Collect all keys including provenance columns
+            LinkedHashSet<String> keys = new LinkedHashSet<>();
+            for (ObjectNode row : outRows) {
+                row.fieldNames().forEachRemaining(keys::add);
+            }
+            List<ColumnSpec> columnSpecs = ColumnSpec.project(keys, null);
+
+            String sheetName = uniqueSheetName(safeSheetName(op.name()), usedNames);
+            usedNames.add(sheetName);
+
+            Sheet sheet = workbook.createSheet(sheetName);
+            CellStyle titleStyle  = styleFactory.createTitleStyle(workbook, IndexedColors.DARK_BLUE);
+            CellStyle headerStyle = styleFactory.createHeaderStyle(workbook, IndexedColors.BLUE_GREY);
+            CellStyle sectionStyle = styleFactory.createTitleStyle(workbook, IndexedColors.LIGHT_BLUE);
+            CellStyle textStyle   = styleFactory.createTextStyle(workbook, false);
+
+            createTitleRow(sheet, titleStyle, op.name() + " \u2014 " + type);
+            final int HEADER_START = 2;
+            int headerDepth = writeHierarchicalHeaders(sheet, columnSpecs, HEADER_START, headerStyle);
+            int dataStartRow = HEADER_START + headerDepth;
+            int lastCol = Math.max(0, columnSpecs.size() - 1);
+
+            int rowIndex = dataStartRow;
+            int written = 0;
+
+            if ("DIFF".equals(type)) {
+                // Write section labels and grouped rows for DIFF
+                for (String source : sources) {
+                    List<ObjectNode> group = groupRows.get(source);
+                    if (group == null || group.isEmpty()) continue;
+
+                    // Section label row
+                    if (written >= MAX_DATA_ROWS) break;
+                    Row sectionRow = sheet.createRow(rowIndex++);
+                    Cell sectionCell = sectionRow.createCell(0);
+                    sectionCell.setCellValue("\u2014\u2014 " + source + " unique \u2014\u2014");
+                    sectionCell.setCellStyle(sectionStyle);
+                    if (lastCol > 0) {
+                        sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 0, lastCol));
+                    }
+                    written++;
+
+                    // Data rows for this source
+                    for (ObjectNode rowNode : group) {
+                        if (written >= MAX_DATA_ROWS) break;
+                        Row row = sheet.createRow(rowIndex++);
+                        for (int i = 0; i < columnSpecs.size(); i++) {
+                            JsonNode val = rowNode.get(columnSpecs.get(i).field());
+                            setCell(row, i, jsonNodeToString(val), textStyle);
+                        }
+                        written++;
+                    }
+                }
+            } else {
+                // Flat table for INTERSECT / EXCEPT
+                for (ObjectNode rowNode : outRows) {
+                    if (written >= MAX_DATA_ROWS) break;
+                    Row row = sheet.createRow(rowIndex++);
+                    for (int i = 0; i < columnSpecs.size(); i++) {
+                        JsonNode val = rowNode.get(columnSpecs.get(i).field());
+                        setCell(row, i, jsonNodeToString(val), textStyle);
+                    }
+                    written++;
+                }
+            }
+
+            sheet.createFreezePane(0, dataStartRow);
+            if (!columnSpecs.isEmpty()) {
+                sheet.setAutoFilter(new CellRangeAddress(dataStartRow - 1, dataStartRow - 1, 0, columnSpecs.size() - 1));
+            }
+            autoSize(sheet, columnSpecs.size());
+        }
+    }
+
+    private void createCompareSheets(Workbook workbook, SheetStyleFactory styleFactory,
+                                     List<ExecutionResult> results, FilterSpec filterSpec,
+                                     Set<String> usedNames) {
+        if (filterSpec == null || filterSpec.compares() == null || filterSpec.compares().isEmpty()) {
+            return;
+        }
+
+        ObjectMapper mapper = new ObjectMapper();
+        Map<String, List<ObjectNode>> rowsByRequest = new LinkedHashMap<>();
+        for (ExecutionResult result : results) {
+            String body = result.responseBody();
+            if (body == null || body.isBlank()) continue;
+            try {
+                JsonNode root = mapper.readTree(body);
+                List<ObjectNode> rows = extractResponseRows(root);
+                if (!rows.isEmpty()) {
+                    rowsByRequest.put(result.requestName(), rows);
+                }
+            } catch (Exception ignored) {
+            }
+        }
+
+        for (CompareSpec cmp : filterSpec.compares()) {
+            String field = cmp.field();
+            List<String> sources = cmp.sources();
+
+            // Build value -> set of sources containing it
+            Map<String, Set<String>> valueToSources = new LinkedHashMap<>();
+            for (String source : sources) {
+                List<ObjectNode> sourceRows = rowsByRequest.getOrDefault(source, List.of());
+                for (ObjectNode row : sourceRows) {
+                    JsonNode val = row.get(field);
+                    if (val != null && !val.isNull()) {
+                        valueToSources.computeIfAbsent(val.asText(), k -> new LinkedHashSet<>()).add(source);
+                    }
+                }
+            }
+
+            if (valueToSources.isEmpty()) {
+                System.out.printf("[INFO] Compare \"%s\" on field \"%s\" produced no values — sheet skipped.%n", cmp.name(), field);
+                continue;
+            }
+
+            // Build output rows
+            List<ObjectNode> outRows = new ArrayList<>();
+            List<String> sortedValues = new ArrayList<>(valueToSources.keySet());
+            Collections.sort(sortedValues);
+
+            for (String value : sortedValues) {
+                Set<String> present = valueToSources.get(value);
+                ObjectNode row = mapper.createObjectNode();
+                row.put(field, value);
+                for (String source : sources) {
+                    row.put("_in_" + source, present.contains(source));
+                }
+                row.put("_count", present.size());
+                outRows.add(row);
+            }
+
+            // Column specs: field, then _in_<source> for each, then _count
+            List<ColumnSpec> columnSpecs = new ArrayList<>();
+            columnSpecs.add(new ColumnSpec(field, null));
+            for (String source : sources) {
+                columnSpecs.add(new ColumnSpec("_in_" + source, null));
+            }
+            columnSpecs.add(new ColumnSpec("_count", null));
+
+            String sheetName = uniqueSheetName(safeSheetName(cmp.name()), usedNames);
+            usedNames.add(sheetName);
+
+            Sheet sheet = workbook.createSheet(sheetName);
+            CellStyle titleStyle  = styleFactory.createTitleStyle(workbook, IndexedColors.DARK_BLUE);
+            CellStyle headerStyle = styleFactory.createHeaderStyle(workbook, IndexedColors.BLUE_GREY);
+            CellStyle textStyle   = styleFactory.createTextStyle(workbook, false);
+
+            createTitleRow(sheet, titleStyle, cmp.name() + " \u2014 COMPARE (" + field + ")");
+            Row headerRow = sheet.createRow(2);
+            for (int i = 0; i < columnSpecs.size(); i++) {
+                Cell cell = headerRow.createCell(i);
+                cell.setCellValue(columnSpecs.get(i).header());
+                cell.setCellStyle(headerStyle);
+            }
+            int dataStartRow = 3;
+
+            int rowIndex = dataStartRow;
+            int written = 0;
+            for (ObjectNode rowNode : outRows) {
+                if (written >= MAX_DATA_ROWS) break;
+                Row row = sheet.createRow(rowIndex++);
+                for (int i = 0; i < columnSpecs.size(); i++) {
+                    JsonNode val = rowNode.get(columnSpecs.get(i).field());
+                    setCell(row, i, jsonNodeToString(val), textStyle);
+                }
+                written++;
+            }
+
+            sheet.createFreezePane(0, dataStartRow);
+            sheet.setAutoFilter(new CellRangeAddress(dataStartRow - 1, dataStartRow - 1, 0, columnSpecs.size() - 1));
             autoSize(sheet, columnSpecs.size());
         }
     }

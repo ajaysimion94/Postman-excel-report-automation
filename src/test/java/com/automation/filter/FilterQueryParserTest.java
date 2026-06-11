@@ -136,6 +136,58 @@ class FilterQueryParserTest {
     }
 
     @Test
+    void parsesIntersectStatement() throws Exception {
+        Path file = Files.createTempFile("intersect", ".filter");
+        Files.writeString(file, "INTERSECT CommonRows FROM \"RequestA\", \"RequestB\";");
+
+        FilterSpec spec = FilterQueryParser.parse(file);
+        assertNotNull(spec.setOps());
+        assertEquals(1, spec.setOps().size());
+        assertEquals("CommonRows", spec.setOps().get(0).name());
+        assertEquals("INTERSECT", spec.setOps().get(0).type());
+        assertEquals(List.of("RequestA", "RequestB"), spec.setOps().get(0).sources());
+    }
+
+    @Test
+    void parsesExceptStatement() throws Exception {
+        Path file = Files.createTempFile("except", ".filter");
+        Files.writeString(file, "EXCEPT OnlyA FROM \"RequestA\", \"RequestB\", \"RequestC\";");
+
+        FilterSpec spec = FilterQueryParser.parse(file);
+        assertNotNull(spec.setOps());
+        assertEquals(1, spec.setOps().size());
+        assertEquals("OnlyA", spec.setOps().get(0).name());
+        assertEquals("EXCEPT", spec.setOps().get(0).type());
+        assertEquals(List.of("RequestA", "RequestB", "RequestC"), spec.setOps().get(0).sources());
+    }
+
+    @Test
+    void parsesDiffStatement() throws Exception {
+        Path file = Files.createTempFile("diff", ".filter");
+        Files.writeString(file, "DIFF Mismatches FROM \"RequestA\", \"RequestB\";");
+
+        FilterSpec spec = FilterQueryParser.parse(file);
+        assertNotNull(spec.setOps());
+        assertEquals(1, spec.setOps().size());
+        assertEquals("Mismatches", spec.setOps().get(0).name());
+        assertEquals("DIFF", spec.setOps().get(0).type());
+        assertEquals(List.of("RequestA", "RequestB"), spec.setOps().get(0).sources());
+    }
+
+    @Test
+    void parsesCompareStatement() throws Exception {
+        Path file = Files.createTempFile("compare", ".filter");
+        Files.writeString(file, "COMPARE IdCompare ON id FROM \"RequestA\", \"RequestB\";");
+
+        FilterSpec spec = FilterQueryParser.parse(file);
+        assertNotNull(spec.compares());
+        assertEquals(1, spec.compares().size());
+        assertEquals("IdCompare", spec.compares().get(0).name());
+        assertEquals("id", spec.compares().get(0).field());
+        assertEquals(List.of("RequestA", "RequestB"), spec.compares().get(0).sources());
+    }
+
+    @Test
     void parsesLookupTableStatement() throws Exception {
         Path file = Files.createTempFile("lookup", ".filter");
         Files.writeString(file, """

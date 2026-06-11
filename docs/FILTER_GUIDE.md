@@ -53,7 +53,7 @@ FILTER "List posts" WHERE (status = active OR priority = high) AND NOT archived 
 | Value and text operators | `IS`, `NULL`, `TRUE`, `FALSE`, `IN`, `LIKE`, `ILIKE`, `CONTAINS`, `NOT_CONTAINS`, `STARTS_WITH`, `ENDS_WITH`, `REGEX` |
 | Date filtering | `DATE_CONFIG`, `FORMAT`, `TIMEZONE`, `BETWEEN`, `DATE_PRESET`, `TODAY`, `YESTERDAY`, `THIS_WEEK`, `LAST_WEEK`, `THIS_MONTH`, `LAST_MONTH`, `THIS_QUARTER`, `LAST_QUARTER`, `THIS_YEAR`, `LAST_YEAR` |
 | Output shaping | `SHAPE`, `DISTINCT`, `ORDER BY`, `ASC`, `DESC`, `LIMIT`, `OFFSET`, `GROUP BY`, `AGG`, `AS`, `HAVING` |
-| Cross-request outputs | `LOOKUP_TABLE`, `FROM`, `LOOKUP`, `BY`, `AS`, `UNION`, `ALL` |
+| Cross-request outputs | `LOOKUP_TABLE`, `FROM`, `LOOKUP`, `BY`, `AS`, `UNION`, `ALL`, `INTERSECT`, `EXCEPT`, `DIFF`, `COMPARE` |
 | Array expansion | `EXPAND`, `ON`, `AS` |
 | Summary sheet layout | `TITLE`, `DESCRIPTION`, `TEXT`, `KV`, `LV`, `TABLE`, `QT`/`QUICK_TABLE`, `LABEL_TABLE`, `METRICS`, `STATUS`, `$var = FILTER ...`, `$var` |
 
@@ -332,6 +332,197 @@ Notes:
 - `UNION` uses raw request response rows. Request-level `FILTER` and `COLUMNS` do not change union input rows.
 - After the union is built, you can target it with `SHAPE "<union-name>" ...`.
 
+### `INTERSECT`
+
+Syntax:
+
+```sql
+INTERSECT <sheet-name> FROM <request1>, <request2> [, <request3>, ...];
+```
+
+Purpose:
+
+- Creates a new sheet containing only rows that exist in **every** specified source request.
+- A row is considered identical across sources when its full JSON serialisation matches (same dedup mechanism as `UNION`).
+- Adds provenance columns to the output so you can see which sources contain each row.
+
+Provenance columns:
+
+| Column | Content |
+| ------ | ------- |
+| `_source` | Always `"ALL"` — all rows passed every source |
+| `_in_<request>` | `true` for every source (since only common rows survive) |
+
+Example:
+
+```sql
+INTERSECT CommonPosts FROM "List posts", "List users";
+```
+
+If `List posts` returns `[{id:1},{id:2},{id:3}]` and `List users` returns `[{id:2},{id:3},{id:4}]`, the `CommonPosts` sheet contains:
+
+| id | _source | _in_List posts | _in_List users |
+| -- | ------- | -------------- | -------------- |
+| 2  | ALL     | true           | true           |
+| 3  | ALL     | true           | true           |
+
+Notes:
+
+- Requires at least 2 sources.
+- You can target the output with `SHAPE "<sheet-name>" ...`.
+
+### `EXCEPT`
+
+Syntax:
+
+```sql
+EXCEPT <sheet-name> FROM <request1> [, <request2>, <request3>, ...];
+```
+
+Purpose:
+
+- Creates a new sheet containing rows from the **first** source that are **not** present in any subsequent source.
+- A row is considered identical across sources when its full JSON serialisation matches.
+- Adds provenance columns to the output.
+
+Provenance columns:
+
+| Column | Content |
+| ------ | ------- |
+| `_source` | Name of the first source (e.g., `List posts`) |
+| `_in_<source1>` | `true` |
+| `_in_<sourceN>` | `false` for every other source |
+
+Example:
+
+```sql
+EXCEPT PostsOnly FROM "List posts", "List users";
+```
+
+If `List posts` returns `[{id:1},{id:2},{id:3}]` and `List users` returns `[{id:2},{id:3},{id:4}]`, the `PostsOnly` sheet contains:
+
+| id | _source | _in_List posts | _in_List users |
+| -- | ------- | -------------- | -------------- |
+| 1  | List posts | true         | false          |
+
+Notes:
+
+- Requires at least 2 sources.
+- Multiple secondary sources are combined: a row is excluded if it exists in *any* subsequent source.
+- You can target the output with `SHAPE "<sheet-name>" ...`.
+
+### `COMPARE`
+
+Syntax:
+
+```sql
+COMPARE <sheet-name> ON <field> FROM <request1>, <request2> [, <request3>, ...];
+```
+
+Purpose:
+
+- Creates a value matrix comparing a **specific field** across multiple request outputs.
+- Each unique value of `<field>` gets one row with boolean columns per source and a count of how many sources contain it.
+- Unlike `INTERSECT` / `EXCEPT`, this compares a single column rather than entire rows.
+
+Output columns:
+
+| Column | Content |
+| ------ | ------- |
+| `<field>` | The unique value |
+| `_in_<request>` | `true` or `false` per source |
+| `_count` | Number of sources containing this value |
+
+Example:
+
+```sql
+COMPARE IdCompare ON id FROM "List posts", "List users";
+```
+
+If `List posts` returns `[{id:1},{id:2},{id:3}]` and `List users` returns `[{id:2},{id:3},{id:4}]`, the `IdCompare` sheet contains:
+
+| id | _in_List posts | _in_List users | _count |
+| -- | -------------- | -------------- | ------ |
+| 1  | true           | false          | 1      |
+| 2  | true           | true           | 2      |
+| 3  | true           | true           | 2      |
+| 4  | false          | true           | 1      |
+
+Notes:
+
+- Requires at least 2 sources.
+- Values are sorted alphabetically for deterministic output.
+- You can target the output with `SHAPE "<sheet-name>" ...`.
+
+### `DIFF`
+
+Syntax:
+
+```sql
+DIFF <sheet-name> FROM <request1> [, <request2>, <request3>, ...];
+```
+
+Purpose:
+
+- Creates a sheet listing rows that are **unique to each source** — the symmetric difference.
+- For each source in order, a section label row (`--- <source> unique ---`) is written, followed by the rows that exist only in that source and no other.
+- Within each section, each row has `_source` set to its source name and `_in_<request>` boolean columns showing presence across all sources.
+
+Complete example:
+
+```sql
+# ── Select collection and requests ──
+COLLECTION jsonplaceholder;
+REQUESTS "List posts", "List users";
+
+# ── Column projection for response-data sheets ──
+COLUMNS "List posts": id, userId, title;
+COLUMNS "List users": id, name, email;
+
+# ── DIFF: rows unique to each source ──
+# Creates "PostUserDiff" sheet with section labels:
+#   --- List posts unique ---
+#   ...rows in List posts but NOT in List users...
+#   --- List users unique ---
+#   ...rows in List users but NOT in List posts...
+DIFF PostUserDiff FROM "List posts", "List users";
+
+# ── Apply shape (sort, limit) on the DIFF output ──
+SHAPE "PostUserDiff" ORDER BY id ASC;
+```
+
+Given these responses:
+
+`List posts`:
+```json
+[{"id":1,"userId":1,"title":"post A"},{"id":2,"userId":1,"title":"post B"}]
+```
+
+`List users`:
+```json
+[{"id":1,"name":"Alice"},{"id":3,"name":"Bob"}]
+```
+
+The `PostUserDiff` sheet looks like:
+
+```
+            PostUserDiff — DIFF
+_source     | id | userId | title | name | _in_List posts | _in_List users
+-----------------------------------------------------------------------------
+--- List posts unique ---
+List posts  | 2  | 1      | post B|      | true           | false
+--- List users unique ---
+List users  | 3  |        |       | Bob  | false          | true
+```
+
+Row `id=1` is common to both — excluded from DIFF. Row `id=2` only in posts, row `id=3` only in users — each appears under its source's section label.
+
+Notes:
+
+- Requires at least 2 sources.
+- A row is considered unique to a source when its full JSON serialisation does not match any row in any other source.
+- You can target the output with `SHAPE "<sheet-name>" ...`. When `SHAPE` reorders or limits rows, section labels adjust to only show groups that still have rows.
+
 ### `EXPAND`
 
 Syntax:
@@ -569,16 +760,20 @@ SHAPE "List posts"
 
 ### Which statements can target which outputs?
 
-| Statement | Request name | `*` wildcard | Lookup table name | Union name |
-| --------- | ------------ | ------------ | ----------------- | ---------- |
-| `REQUESTS` / `REQUEST` | Yes | No | No | No |
-| `COLUMNS` | Yes | Yes | No | No |
-| `FILTER` | Yes | Yes | No | No |
-| `DATE_CONFIG` | Yes | Yes | No | No |
-| `EXPAND` | Yes | No | No | No |
-| `LOOKUP_TABLE` | Source request only | No | Creates a table | No |
-| `SHAPE` | Yes | Yes | Yes | Yes |
-| `UNION` | Source requests only | No | No | Creates a union |
+| Statement | Request name | `*` wildcard | Lookup table name | Union name | SetOp/Compare name |
+| --------- | ------------ | ------------ | ----------------- | ---------- | ------------------ |
+| `REQUESTS` / `REQUEST` | Yes | No | No | No | No |
+| `COLUMNS` | Yes | Yes | No | No | No |
+| `FILTER` | Yes | Yes | No | No | No |
+| `DATE_CONFIG` | Yes | Yes | No | No | No |
+| `EXPAND` | Yes | No | No | No | No |
+| `LOOKUP_TABLE` | Source request only | No | Creates a table | No | No |
+| `SHAPE` | Yes | Yes | Yes | Yes | Yes |
+| `UNION` | Source requests only | No | No | Creates a union | No |
+| `INTERSECT` | Source requests only | No | No | No | Creates a set op sheet |
+| `EXCEPT` | Source requests only | No | No | No | Creates a set op sheet |
+| `DIFF` | Source requests only | No | No | No | Creates a set op sheet |
+| `COMPARE` | Source requests only | No | No | No | Creates a compare sheet |
 
 ### Which statements combine in practice?
 
@@ -587,6 +782,8 @@ SHAPE "List posts"
 | Response-data sheet | `REQUESTS` or `REQUEST` + `FILTER` or inline `REQUEST ... WHERE` + `DATE_CONFIG` + `SHAPE` + `COLUMNS` |
 | Lookup table sheet | `REQUESTS` + `LOOKUP_TABLE ... WHERE ... COLUMNS ...` + optional `DATE_CONFIG` + optional `SHAPE "<table-name>"` |
 | Union sheet | `REQUESTS` + `UNION ...` + optional `SHAPE "<union-name>"` |
+| Set operation sheet | `REQUESTS` + `INTERSECT` / `EXCEPT` / `DIFF` + optional `SHAPE "<setop-name>"` |
+| Compare sheet | `REQUESTS` + `COMPARE` + optional `SHAPE "<compare-name>"` |
 | Multi-collection file | Global statements + one selected `COLLECTION` block |
 
 ### Execution order by output type
@@ -596,11 +793,13 @@ SHAPE "List posts"
 | Response-data sheet | Raw request rows -> `EXPAND` -> `FILTER` -> `SHAPE` -> `COLUMNS` |
 | Lookup table sheet | Raw source request rows -> detail lookup merge -> table `WHERE` -> `SHAPE` -> table `COLUMNS` |
 | Union sheet | Raw request rows -> `UNION` or `UNION ... ALL` -> `SHAPE` |
+| Set operation sheet | Raw request rows -> `INTERSECT` / `EXCEPT` / `DIFF` (set logic) -> `SHAPE` |
+| Compare sheet | Raw request rows -> `COMPARE` (value matrix) -> `SHAPE` |
 
 Important:
 
 - Request-level `FILTER` does not feed `LOOKUP_TABLE` source rows.
-- Request-level `COLUMNS` does not affect `LOOKUP_TABLE` or `UNION` sheets.
+- Request-level `COLUMNS` does not affect `LOOKUP_TABLE`, `UNION`, `INTERSECT`, `EXCEPT`, or `COMPARE` sheets.
 - `SHAPE *` can act as a global default, but an exact key-specific shape replaces it for that output.
 
 ## 8. Multi-Collection Files and Merge Rules
@@ -639,6 +838,8 @@ Merge behavior when both global and selected block define values:
 | `LOOKUP_TABLE` | Global and selected entries are both kept |
 | `SHAPE` | Selected block entry for the same key wins |
 | `UNION` | Global and selected entries are both kept |
+| `INTERSECT` / `EXCEPT` / `DIFF` | Global and selected entries are both kept |
+| `COMPARE` | Global and selected entries are both kept |
 | `EXPAND` | Selected block entry for the same key wins |
 
 ## 9. Complete Example
@@ -668,6 +869,18 @@ SHAPE "Items With Details" ORDER BY detail.price DESC LIMIT 50;
 
 UNION "All Items" FROM "List Items", "List Archived Items" ALL;
 SHAPE "All Items" ORDER BY id ASC LIMIT 200;
+
+# INTERSECT: rows common to both List Items and Archived Items
+INTERSECT ActiveAndArchived FROM "List Items", "List Archived Items";
+
+# EXCEPT: rows in List Items that are NOT in Archived Items
+EXCEPT ActiveOnly FROM "List Items", "List Archived Items";
+
+# DIFF: rows unique to each source (section labels group them)
+DIFF Mismatches FROM "List Items", "List Archived Items";
+
+# COMPARE: value matrix comparing the "status" field across List Items and Archived Items
+COMPARE StatusCompare ON status FROM "List Items", "List Archived Items";
 ```
 
 ## 10. Current Parser Scope
@@ -682,10 +895,14 @@ The current `.filter` parser supports:
 - lookup tables
 - shaping
 - unions
+- set operations (`INTERSECT`, `EXCEPT`, `DIFF`)
+- column-wise comparison (`COMPARE`)
 - multi-collection blocks
 - customizable Summary sheet and Index navigation sheet
 
 The current `.filter` syntax does not expose a statement for multi-source join tables. The runtime model supports them internally, but they are not available as `.filter` keywords yet.
+
+New in this release:
 
 ### Recently added keywords
 
@@ -698,6 +915,10 @@ The current `.filter` syntax does not expose a statement for multi-source join t
 - **`IF/ELSE` in WHERE** — conditional branching inside filter predicates: `IF field = value THEN (expr) ELSE (expr)`.
 - **`IF/ELSE` in Summary text** — conditional rendering inside `TEXT`, `KV`, `LV`, and `QT` column values: `IF $var > 0 THEN "found" ELSE "none"`.
 - **Hex colors** — `COLOR` clauses accept hex RGB strings (e.g., `COLOR "#FF5500"` or `COLOR "336699"`) in addition to named `IndexedColors` values.
+- **`INTERSECT`** — set intersection on entire rows across multiple request outputs. Creates a new sheet with only rows present in all sources. Adds `_source` and `_in_<request>` provenance columns.
+- **`EXCEPT`** — set difference on entire rows. Creates a new sheet with rows from the first source that are not in any subsequent source. Adds `_source` and `_in_<request>` provenance columns.
+- **`DIFF`** — symmetric difference (mutual exclusion). Creates a new sheet with section labels for each source followed by rows unique to that source. Adds `_source` and `_in_<request>` provenance columns.
+- **`COMPARE`** — column-wise value matrix across multiple request outputs. Creates a new sheet showing each unique value of a field with boolean presence columns per source and a `_count` column.
 
 ## 11. Common Mistakes
 
@@ -710,6 +931,9 @@ The current `.filter` syntax does not expose a statement for multi-source join t
 | `FILTER` does not change a union | `UNION` reads raw request rows | Filter the request output separately only for its own response sheet, or add a union `SHAPE` if shaping is enough |
 | `EXPAND` wildcard not working | `EXPAND` does not support `*` | Use the exact request name |
 | Request-specific `DATE_CONFIG` fails with spaces in request name | Parser limitation on `<request>.<field>` tokenization | Use `DATE_CONFIG *.<field>` |
+| `INTERSECT` / `EXCEPT` / `DIFF` produces 0 rows | Row signatures must match exactly (full JSON serialisation) | Ensure the responses share identical field structures |
+| `COMPARE` field not found in output | The field name must exist in at least one response row | Check the JSON field paths in your request responses |
+| `FILTER` does not change `INTERSECT` / `EXCEPT` input rows | Set operations read raw request rows | Apply `SHAPE` after the set operation instead |
 
 ## 12. Custom Summary Sheet and Index
 
@@ -1014,3 +1238,8 @@ See `filters/summary-example.filter` in this repo.
 - `filters/summary-features-demo.filter` — comprehensive demo of every Summary feature
 - `filters/ifelse-conditional.filter` — IF/ELSE in WHERE filters and Summary text
 - `filters/status-and-multicol.filter` — STATUS keyword, multi-column QT, hex colors
+- `filters/set-operations.filter` — combined INTERSECT, EXCEPT, DIFF, COMPARE demo
+- `filters/intersect-example.filter` — INTERSECT standalone example
+- `filters/except-example.filter` — EXCEPT standalone example
+- `filters/diff-example.filter` — DIFF standalone example (section labels, symmetric difference)
+- `filters/compare-example.filter` — COMPARE standalone example (value matrix across sources)

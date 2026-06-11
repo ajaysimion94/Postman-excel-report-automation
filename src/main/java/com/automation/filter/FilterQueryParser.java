@@ -228,6 +228,40 @@ public final class FilterQueryParser {
             return;
         }
 
+        if (ts.matchKeyword("INTERSECT")) {
+            String name = ts.readValue();
+            ts.expectKeyword("FROM");
+            List<String> sources = ts.readCommaSeparatedValues();
+            b.setOps.add(new SetOpSpec(name, "INTERSECT", List.copyOf(sources)));
+            return;
+        }
+
+        if (ts.matchKeyword("EXCEPT")) {
+            String name = ts.readValue();
+            ts.expectKeyword("FROM");
+            List<String> sources = ts.readCommaSeparatedValues();
+            b.setOps.add(new SetOpSpec(name, "EXCEPT", List.copyOf(sources)));
+            return;
+        }
+
+        if (ts.matchKeyword("DIFF")) {
+            String name = ts.readValue();
+            ts.expectKeyword("FROM");
+            List<String> sources = ts.readCommaSeparatedValues();
+            b.setOps.add(new SetOpSpec(name, "DIFF", List.copyOf(sources)));
+            return;
+        }
+
+        if (ts.matchKeyword("COMPARE")) {
+            String name = ts.readValue();
+            ts.expectKeyword("ON");
+            String field = ts.readValue();
+            ts.expectKeyword("FROM");
+            List<String> sources = ts.readCommaSeparatedValues();
+            b.compares.add(new CompareSpec(name, field, List.copyOf(sources)));
+            return;
+        }
+
         if (ts.matchKeyword("EXPAND")) {
             String requestKey = ts.readValue();
             ts.expectKeyword("ON");
@@ -342,7 +376,7 @@ public final class FilterQueryParser {
             return;
         }
 
-        throw ts.error("Unknown statement. Supported: COLLECTION, OUTPUT_PREFIX, REQUESTS, REQUEST, COLUMNS, FILTER, DATE_CONFIG, LOOKUP_TABLE, SHAPE, UNION, EXPAND, TITLE, DESCRIPTION, TEXT, KV, LV, TABLE, LABEL_TABLE, QT, QUICK_TABLE, METRICS, STATUS, $var = FILTER ..., $var;");
+        throw ts.error("Unknown statement. Supported: COLLECTION, OUTPUT_PREFIX, REQUESTS, REQUEST, COLUMNS, FILTER, DATE_CONFIG, LOOKUP_TABLE, SHAPE, UNION, INTERSECT, EXCEPT, COMPARE, EXPAND, TITLE, DESCRIPTION, TEXT, KV, LV, TABLE, LABEL_TABLE, QT, QUICK_TABLE, METRICS, STATUS, $var = FILTER ..., $var;");
     }
 
     private static void parseSummaryDollarStatement(TokenStream ts, Builder b) {
@@ -779,6 +813,8 @@ public final class FilterQueryParser {
         private List<CustomTableSpec> customTables = new ArrayList<>();
         private Map<String, DataShapeSpec> dataShapes = new LinkedHashMap<>();
         private List<UnionSpec> unions = new ArrayList<>();
+        private List<SetOpSpec> setOps = new ArrayList<>();
+        private List<CompareSpec> compares = new ArrayList<>();
         private Map<String, ExpandSpec> expands = new LinkedHashMap<>();
         private List<SummaryItem> summaryItems = new ArrayList<>();
         private Map<String, SummaryQuerySpec> summaryQueries = new LinkedHashMap<>();
@@ -803,7 +839,9 @@ public final class FilterQueryParser {
                     dataShapes.isEmpty() ? null : Map.copyOf(dataShapes),
                     unions.isEmpty() ? null : List.copyOf(unions),
                     expands.isEmpty() ? null : Map.copyOf(expands),
-                    summary
+                    summary,
+                    setOps.isEmpty() ? null : List.copyOf(setOps),
+                    compares.isEmpty() ? null : List.copyOf(compares)
             );
         }
     }
@@ -888,6 +926,12 @@ public final class FilterQueryParser {
 
             out.unions = new ArrayList<>(global.unions);
             out.unions.addAll(specific.unions);
+
+            out.setOps = new ArrayList<>(global.setOps);
+            out.setOps.addAll(specific.setOps);
+
+            out.compares = new ArrayList<>(global.compares);
+            out.compares.addAll(specific.compares);
 
             out.expands = new LinkedHashMap<>(global.expands);
             out.expands.putAll(specific.expands);
