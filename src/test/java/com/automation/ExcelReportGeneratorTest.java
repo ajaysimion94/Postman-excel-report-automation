@@ -525,7 +525,7 @@ class ExcelReportGeneratorTest {
                 null, null, null,
                 null, null, null, null,
                 null,
-                List.of(new CompareSpec("IdCompare", "id", List.of("Req A", "Req B")))
+                List.of(new CompareSpec("IdCompare", "id", List.of("Req A", "Req B"), null, null))
         );
 
         RuntimeConfig config = new RuntimeConfig(output, null, output, true, Map.of(), spec);

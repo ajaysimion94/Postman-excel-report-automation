@@ -1937,9 +1937,16 @@ public final class ExcelReportGenerator {
 
             // Build value -> set of sources containing it
             Map<String, Set<String>> valueToSources = new LinkedHashMap<>();
+            Instant compareNow = Instant.now();
             for (String source : sources) {
                 List<ObjectNode> sourceRows = rowsByRequest.getOrDefault(source, List.of());
                 for (ObjectNode row : sourceRows) {
+                    if (cmp.where() != null) {
+                        Map<String, DateFieldConfig> dateFields = resolveDateConfig(source, filterSpec);
+                        if (!RowConditionEvaluator.evaluate(row, cmp.where(), dateFields, compareNow)) {
+                            continue;
+                        }
+                    }
                     JsonNode val = row.get(field);
                     if (val != null && !val.isNull()) {
                         valueToSources.computeIfAbsent(val.asText(), k -> new LinkedHashSet<>()).add(source);
@@ -1966,6 +1973,10 @@ public final class ExcelReportGenerator {
                 }
                 row.put("_count", present.size());
                 outRows.add(row);
+            }
+
+            if (cmp.having() != null) {
+                outRows.removeIf(row -> !RowConditionEvaluator.evaluate(row, cmp.having(), Collections.emptyMap(), compareNow));
             }
 
             // Column specs: field, then _in_<source> for each, then _count

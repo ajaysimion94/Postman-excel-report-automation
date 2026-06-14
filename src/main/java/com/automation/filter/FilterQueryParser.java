@@ -258,7 +258,17 @@ public final class FilterQueryParser {
             String field = ts.readValue();
             ts.expectKeyword("FROM");
             List<String> sources = ts.readCommaSeparatedValues();
-            b.compares.add(new CompareSpec(name, field, List.copyOf(sources)));
+            RowFilterGroup where = null;
+            RowFilterGroup having = null;
+            if (ts.matchKeyword("WHERE")) {
+                Expr expr = parseExpr(ts);
+                where = compileWhere(expr, ts);
+            }
+            if (ts.matchKeyword("HAVING")) {
+                Expr expr = parseExpr(ts);
+                having = compileWhere(expr, ts);
+            }
+            b.compares.add(new CompareSpec(name, field, List.copyOf(sources), where, having));
             return;
         }
 

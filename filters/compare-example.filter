@@ -21,6 +21,9 @@ COMPARE UserIdCompare ON id FROM "List posts", "List archived posts", "List user
 # Compare userId values between just posts and archived posts
 COMPARE PostUserIdCompare ON userId FROM "List posts", "List archived posts";
 
+# Compare with WHERE — only rows where userId <= 3
+COMPARE LimitedUserIdCompare ON userId FROM "List posts", "List archived posts" WHERE userId <= 3;
+
 # Sort by value
 SHAPE "UserIdCompare" ORDER BY id ASC;
 SHAPE "PostUserIdCompare" ORDER BY userId ASC;

@@ -9,6 +9,8 @@ import java.util.List;
 public record CompareSpec(
         String name,
         String field,
-        List<String> sources
+        List<String> sources,
+        RowFilterGroup where,
+        RowFilterGroup having
 ) {
 }
