@@ -12,7 +12,7 @@
 #
 # Each row includes: all original fields + _source + _in_<req> per source
 
-COLLECTION jsonplaceholder;
+COLLECTION my-collection;   # TEMPLATE: replace with your collection; the request and field names below are placeholders
 REQUESTS "List posts", "List users";
 OUTPUT_PREFIX diff-example;
 

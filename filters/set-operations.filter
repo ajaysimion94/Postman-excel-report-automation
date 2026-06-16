@@ -6,7 +6,7 @@
 # Adjust collection name and request names to match yours.
 
 # ── Collection setup ──
-COLLECTION jsonplaceholder;
+COLLECTION my-collection;   # TEMPLATE: replace with your collection; the request and field names below are placeholders
 REQUESTS "List posts", "List users", "List archived posts";
 OUTPUT_PREFIX set-ops-demo;
 

@@ -6,7 +6,7 @@
 # Output columns:
 #   all original fields + _source (always "ALL") + _in_<req> per source (always true)
 
-COLLECTION jsonplaceholder;
+COLLECTION my-collection;   # TEMPLATE: replace with your collection; the request and field names below are placeholders
 REQUESTS "List posts", "List users";
 OUTPUT_PREFIX intersect-example;
 

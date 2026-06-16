@@ -2,7 +2,7 @@
 # Copy this file and adjust request names/fields to your collection.
 
 # 1) Pick collection and baseline requests
-COLLECTION jsonplaceholder;
+COLLECTION my-collection;   # TEMPLATE: replace with your collection; the request and field names below are placeholders
 REQUESTS "List posts", "List users";
 
 # 2) Optional output naming
@@ -17,7 +17,7 @@ COLUMNS "List users": id, name, email;
 COLUMNS *: id;
 
 # 5) Date parsing + date filter
-DATE_CONFIG *.createdAt FORMAT yyyy-MM-dd'T'HH:mm:ss'Z' TIMEZONE UTC;
+DATE_CONFIG *.createdAt FORMAT "yyyy-MM-dd'T'HH:mm:ss'Z'" TIMEZONE UTC;
 FILTER "List posts" WHERE createdAt DATE_PRESET THIS_MONTH;
 
 # 6) Row shaping: DISTINCT + ORDER + pagination

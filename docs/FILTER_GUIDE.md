@@ -55,7 +55,7 @@ FILTER "List posts" WHERE (status = active OR priority = high) AND NOT archived 
 | Output shaping | `SHAPE`, `DISTINCT`, `ORDER BY`, `ASC`, `DESC`, `LIMIT`, `OFFSET`, `GROUP BY`, `AGG`, `AS`, `HAVING` |
 | Cross-request outputs | `LOOKUP_TABLE`, `FROM`, `LOOKUP`, `BY`, `AS`, `UNION`, `ALL`, `INTERSECT`, `EXCEPT`, `DIFF`, `COMPARE` |
 | Array expansion | `EXPAND`, `ON`, `AS` |
-| Summary sheet layout | `TITLE`, `DESCRIPTION`, `TEXT`, `KV`, `LV`, `TABLE`, `QT`/`QUICK_TABLE`, `LABEL_TABLE`, `METRICS`, `STATUS`, `$var = FILTER ...`, `$var` |
+| Summary sheet layout | `TITLE`, `DESCRIPTION`, `TEXT`, `KV`, `LV`, `TABLE`, `QT`/`QUICK_TABLE`, `LABEL_TABLE`, `METRICS`, `STATUS`, `$var = FILTER\|TABLE\|UNION\|INTERSECT\|EXCEPT\|DIFF\|COMPARE ...`, `$var = FILTER $other ...`, `$var` |
 
 ## 3. Statement Reference
 
@@ -220,7 +220,7 @@ Purpose:
 Examples:
 
 ```sql
-DATE_CONFIG *.createdAt FORMAT yyyy-MM-dd'T'HH:mm:ss'Z' TIMEZONE UTC;
+DATE_CONFIG *.createdAt FORMAT "yyyy-MM-dd'T'HH:mm:ss'Z'" TIMEZONE UTC;
 DATE_CONFIG Orders.createdAt FORMAT yyyy-MM-dd TIMEZONE Asia/Kolkata;
 ```
 
@@ -416,8 +416,12 @@ Notes:
 Syntax:
 
 ```sql
-COMPARE <sheet-name> ON <field> FROM <request1>, <request2> [, <request3>, ...];
+COMPARE <sheet-name> ON <field> FROM <request1>, <request2> [, <request3>, ...]
+  [WHERE <predicate>] [HAVING <predicate>];
 ```
+
+`WHERE` filters the source rows before the value matrix is built; `HAVING` filters the produced
+matrix rows (e.g. `HAVING _count > 1` to keep only values present in more than one source).
 
 Purpose:
 
@@ -605,6 +609,27 @@ Runtime behavior:
 - Numeric operators try numeric comparison first.
 - If both sides are not numeric, comparison falls back to case-insensitive string comparison.
 
+### Variable values in predicates
+
+A comparison value can be a `$name` reference instead of a literal. At evaluation time it is
+resolved against the **runtime variable map** (values from your `.env` file, the credential
+store, system environment, and any filter-level `auth`/`vars`). This lets one `.filter` file
+run against different environments without edits.
+
+```sql
+FILTER "List posts" WHERE userId = $targetUser;
+FILTER "Orders"     WHERE region IN ('US','CA') AND tier = $minTier;
+```
+
+Notes:
+
+- The form is `$identifier` (letters, digits, underscore). A quoted literal that merely starts
+  with `$` (e.g. `"$4.99"`) is left as-is.
+- If the variable is not defined, a warning is printed and the literal text is kept (the rule
+  will generally not match).
+- Variable resolution works in `FILTER`, inline `REQUEST ... WHERE`, `LOOKUP_TABLE ... WHERE`,
+  `SHAPE ... HAVING`, and `COMPARE ... WHERE/HAVING`.
+
 ### Null and boolean keywords
 
 | Keyword | Meaning | Example |
@@ -707,7 +732,7 @@ FILTER "Events" WHERE createdAt BETWEEN 2026-01-01 AND 2026-01-31;
 Recommended date setup:
 
 ```sql
-DATE_CONFIG *.createdAt FORMAT yyyy-MM-dd'T'HH:mm:ss'Z' TIMEZONE UTC;
+DATE_CONFIG *.createdAt FORMAT "yyyy-MM-dd'T'HH:mm:ss'Z'" TIMEZONE UTC;
 FILTER "Events" WHERE createdAt DATE_PRESET THIS_MONTH;
 ```
 
@@ -855,7 +880,7 @@ FILTER "List Items"
 
 COLUMNS "List Items": id, title, status, createdAt;
 
-DATE_CONFIG *.createdAt FORMAT yyyy-MM-dd'T'HH:mm:ss'Z' TIMEZONE UTC;
+DATE_CONFIG *.createdAt FORMAT "yyyy-MM-dd'T'HH:mm:ss'Z'" TIMEZONE UTC;
 SHAPE "List Items" ORDER BY createdAt DESC LIMIT 100;
 
 LOOKUP_TABLE "Items With Details"
@@ -906,6 +931,14 @@ New in this release:
 
 ### Recently added keywords
 
+- **Variables across queries** — capture any output into a summary variable
+  (`$x = UNION/INTERSECT/EXCEPT/DIFF/COMPARE ...`), derive one variable from another
+  (`$b = FILTER $a WHERE ...`), and reference a runtime `$variable` inside a `WHERE` value
+  (`WHERE userId = $targetUser`).
+- **Compound summary `IF` conditions** — `IF $a > 0 AND $b > 0 THEN ... ELSE ...` with `AND`/`OR`/parentheses.
+- **Redesigned Summary visuals** — automatic spacing, borderless rows, right-aligned numbers,
+  zebra-striped tables, and auto-sized columns (no new syntax).
+
 - **`LV`** — like `KV` but uses a plain (non-bold) label style.
 - **`QT`** / **`QUICK_TABLE`** — inline table with default header row ("Label", "Value"). Override headers with `HEADERS` or `COLUMNS`. 3+ headers enable multi-column mode with comma-separated ROW values.
 - **`LABEL_TABLE`** — inline label-value table **without** a header row by default (clean label/value layout). Add `HEADERS` or `COLUMNS` to include one.
@@ -947,6 +980,33 @@ Place summary statements at the end of your `.filter` file (or in a global block
 | 2nd | `Index` | Hyperlinks to every other sheet |
 | 3rd+ | Data sheets | `Results`, folder sheets, response data, lookup tables, unions |
 
+### Workbook sheet inventory
+
+For a run with many requests, the workbook contains the following tabs, in this order. Each
+appears only when its condition is met:
+
+| Order | Sheet | When it appears |
+| ----- | ----- | --------------- |
+| 1 | **Summary** | Always (custom dashboard if a summary block exists, else default execution metrics) |
+| 2 | **Index** | Always — hyperlinks to every other sheet |
+| 3 | **Results** | Always — one row per request (HTTP status, duration, errors, assertions) |
+| 4 | **Folder sheets** | One per Postman folder that contains requests (HTTP execution summary per folder) |
+| 5 | **Response-data sheets** | One per request, **skipped if the request yields no rows** after `EXPAND`/`FILTER`/`SHAPE`/column selection |
+| 6 | **Lookup / custom-table sheets** | One per `LOOKUP_TABLE` that produces rows |
+| 7 | **Union sheets** | One per `UNION` that produces rows |
+| 8 | **Set-op sheets** | One per `INTERSECT` / `EXCEPT` / `DIFF` that produces rows |
+| 9 | **Compare sheets** | One per `COMPARE` that produces values |
+
+Notes:
+
+- A `UNION`/`INTERSECT`/`EXCEPT`/`DIFF`/`COMPARE` **captured into a summary `$variable`** (e.g.
+  `$x = COMPARE ON id FROM ...`) renders only inside the Summary — it does **not** create its own sheet.
+- If the data exceeds Excel's per-sheet row limit, the report is split across multiple files; only
+  the first file carries Summary/Index/Results/derived sheets, and later files carry the overflow
+  response-data sheets.
+- Response-data, lookup, union, set-op, and compare sheet names are de-duplicated (and truncated to
+  Excel's 31-character limit); folder sheets are de-duplicated against the reserved names too.
+
 ### Summary layout
 
 - **Column A** = labels (grey background, bold for `KV`; plain grey for `LV` and auto-detected `TEXT`).
@@ -955,6 +1015,11 @@ Place summary statements at the end of your `.filter` file (or in a global block
 - **`TEXT` without `$var`** merges across columns A–B (no label/value split).
 - **`TEXT` with `$var`** auto-detects as a label+value pair. Variable names are humanized with Title Case (e.g., `$POSTS` → label "Posts").
 - No **Metric / Value** header row on `METRICS`, `KV`, or `LV` blocks.
+
+The Summary is styled for readability out of the box: blank-row spacing separates section blocks,
+label/value rows are borderless, numeric values are right-aligned, data tables use alternating
+("zebra") row shading, banner rows are slightly taller, and columns are auto-sized within a
+readable range. No extra syntax is required.
 
 ### Summary statements
 
@@ -971,6 +1036,10 @@ Place summary statements at the end of your `.filter` file (or in a global block
 | `LABEL_TABLE` | `LABEL_TABLE "Status" ROW "Total" $TOTAL ROW "Pass" $PASS;` | Inline label-value table **without** header row by default; add `HEADERS` to include one |
 | `$var = FILTER ...` | `$POSTS = FILTER "List posts" WHERE id > 10;` | Dataset from a request (summary-only) |
 | `$var = TABLE "..."` | `$DETAILS = TABLE "Items With Details";` | Dataset from a `LOOKUP_TABLE` / custom table |
+| `$var = FILTER $other ...` | `$TOP = FILTER $POSTS WHERE id > 50;` | Dataset **derived** from another `$variable` |
+| `$var = UNION ...` | `$ALL = UNION FROM "List posts", "List users" ALL;` | Captures a UNION result (no separate sheet) |
+| `$var = INTERSECT/EXCEPT/DIFF ...` | `$COMMON = INTERSECT FROM "List posts", "List users";` | Captures a set-operation result |
+| `$var = COMPARE ...` | `$M = COMPARE ON id FROM "List posts", "List users";` | Captures a COMPARE value matrix |
 | `TABLE $var` | `TABLE $POSTS TITLE "Posts" COLUMNS id AS "ID";` | Table with optional title and column rename |
 | `$var;` | `$POSTS;` | Shorthand for `TABLE $var;` |
 | `METRICS` | `METRICS;` | Execution stats as label/value rows |
@@ -1140,7 +1209,15 @@ Summary text expressions (`TEXT`, `KV`, `LV`, and `QT` column values) support co
 Syntax:
 
 ```sql
-IF $variable <op> <value> THEN <textExpr> [ELSE <textExpr>]
+IF <condition> THEN <textExpr> [ELSE <textExpr>]
+```
+
+The **condition** is one or more `$variable <op> <value>` terms combined with `AND`/`OR`
+and optional parentheses (the same shape as a `WHERE` predicate, scoped to summary variables):
+
+```sql
+KV "Coverage" IF $POSTS > 0 AND $TODOS > 0 THEN "both present" ELSE "incomplete";
+KV "Tier"     IF ($A > 0 OR $B > 0) AND $MODE = active THEN "live" ELSE "idle";
 ```
 
 - **`$variable`** — a summary query variable (resolves to row count for multi-row results, or scalar for 1-row-1-column results)
@@ -1230,6 +1307,7 @@ See `filters/summary-example.filter` in this repo.
 
 ## 13. Example Files in This Repo
 
+- `filters/showcase.filter` — variables across queries (`$x = UNION/COMPARE`, `$b = FILTER $a`, `$var` in `WHERE`), compound summary `IF`, and the redesigned Summary
 - `filters/tutorial.filter` — full walkthrough of all core features
 - `filters/frequent-use.filter` — commonly used patterns
 - `filters/multi-collection.filter` — multiple `COLLECTION` blocks

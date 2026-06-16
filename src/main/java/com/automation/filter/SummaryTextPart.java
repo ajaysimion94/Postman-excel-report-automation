@@ -56,20 +56,73 @@ public sealed interface SummaryTextPart permits SummaryTextPart.Literal, Summary
      * contain nested variables, literals, or even nested IF/ELSE.
      */
     record IfElse(
-            /** The $variable name used in the condition. */
+            /** The first condition term's $variable name (kept for single-term backward compatibility). */
             String variableName,
-            /** Comparison operator: =, !=, >, >=, <, <= */
+            /** The first condition term's operator: =, !=, >, >=, <, <= */
             String op,
-            /** The comparison target value. */
+            /** The first condition term's comparison value. */
             String value,
+            /** The full (possibly compound) condition tree. Never null. */
+            Condition condition,
             /** Text parts to render when condition is true. */
             List<SummaryTextPart> thenParts,
             /** Text parts to render when condition is false. Null means empty string. */
             List<SummaryTextPart> elseParts
     ) implements SummaryTextPart {
+        /** Single-term condition (backward compatible). */
+        public IfElse(String variableName, String op, String value,
+                      List<SummaryTextPart> thenParts, List<SummaryTextPart> elseParts) {
+            this(variableName, op, value, new Condition.Term(variableName, op, value), thenParts, elseParts);
+        }
+
+        /** Single-term condition without an ELSE branch (backward compatible). */
         public IfElse(String variableName, String op, String value,
                       List<SummaryTextPart> thenParts) {
             this(variableName, op, value, thenParts, List.of());
+        }
+
+        /** Compound condition tree; the legacy variableName/op/value mirror the first term. */
+        public IfElse(Condition condition, List<SummaryTextPart> thenParts, List<SummaryTextPart> elseParts) {
+            this(firstVar(condition), firstOp(condition), firstValue(condition), condition, thenParts, elseParts);
+        }
+
+        private static Condition.Term firstTerm(Condition c) {
+            if (c instanceof Condition.Term t) return t;
+            if (c instanceof Condition.And a) return firstTerm(a.left());
+            if (c instanceof Condition.Or o) return firstTerm(o.left());
+            return null;
+        }
+
+        private static String firstVar(Condition c) {
+            Condition.Term t = firstTerm(c);
+            return t == null ? null : t.variableName();
+        }
+
+        private static String firstOp(Condition c) {
+            Condition.Term t = firstTerm(c);
+            return t == null ? null : t.op();
+        }
+
+        private static String firstValue(Condition c) {
+            Condition.Term t = firstTerm(c);
+            return t == null ? null : t.value();
+        }
+    }
+
+    /**
+     * A boolean condition for a summary {@code IF}. Either a single comparison {@link Term}
+     * or {@link And}/{@link Or} combinations, allowing conditions such as
+     * {@code IF $a > 0 AND $b > 0 THEN ...}.
+     */
+    sealed interface Condition permits Condition.Term, Condition.And, Condition.Or {
+        /** A single {@code $variable op value} comparison. */
+        record Term(String variableName, String op, String value) implements Condition {
+        }
+
+        record And(Condition left, Condition right) implements Condition {
+        }
+
+        record Or(Condition left, Condition right) implements Condition {
         }
     }
 }

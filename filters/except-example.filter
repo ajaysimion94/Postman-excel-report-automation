@@ -7,7 +7,7 @@
 # Output columns:
 #   all original fields + _source (<first_source>) + _in_<req> per source
 
-COLLECTION jsonplaceholder;
+COLLECTION my-collection;   # TEMPLATE: replace with your collection; the request and field names below are placeholders
 REQUESTS "List posts", "List archived posts";
 OUTPUT_PREFIX except-example;
 

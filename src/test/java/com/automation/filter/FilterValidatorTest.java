@@ -5,6 +5,7 @@ import com.automation.postman.PostmanCollection;
 import com.automation.postman.RequestSpec;
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -282,6 +283,50 @@ class FilterValidatorTest {
                 Map.of("*", group),
                 Map.of("*", Map.of("createdAt", new DateFieldConfig("yyyy-MM-dd", "UTC"))),
                 List.of(table));
+        assertDoesNotThrow(() -> FilterValidator.validate(filter, collection, Path.of("demo.json")));
+    }
+
+    // ── summary variable sources (B1/B2) ────────────────────────────────────────────
+
+    @Test
+    void rejectsDerivedVariableWithUndefinedSource() throws Exception {
+        PostmanCollection collection = sampleCollectionWithTwo();
+        Path file = Files.createTempFile("derived-bad", ".filter");
+        Files.writeString(file, """
+                REQUESTS "List users";
+                $B = FILTER $missing WHERE id > 1;
+                """);
+        FilterSpec filter = FilterQueryParser.parse(file);
+        assertThrows(IllegalArgumentException.class,
+                () -> FilterValidator.validate(filter, collection, Path.of("demo.json")));
+    }
+
+    @Test
+    void rejectsCompoundIfWithUndefinedVariable() throws Exception {
+        PostmanCollection collection = sampleCollectionWithTwo();
+        Path file = Files.createTempFile("compound-if-bad", ".filter");
+        Files.writeString(file, """
+                REQUESTS "List users";
+                TEXT IF $undefined > 0 THEN "x" ELSE "y";
+                """);
+        FilterSpec filter = FilterQueryParser.parse(file);
+        assertThrows(IllegalArgumentException.class,
+                () -> FilterValidator.validate(filter, collection, Path.of("demo.json")));
+    }
+
+    @Test
+    void acceptsCapturedSetOpAndDerivedVariables() throws Exception {
+        PostmanCollection collection = sampleCollectionWithTwo();
+        Path file = Files.createTempFile("captured-ok", ".filter");
+        Files.writeString(file, """
+                REQUESTS "List users", "Get user";
+                $COMMON = INTERSECT FROM "List users", "Get user";
+                $BASE = FILTER "List users" WHERE id > 0;
+                $TOP = FILTER $BASE WHERE id > 5;
+                KV "Top" $TOP;
+                TEXT IF $BASE > 0 AND $TOP > 0 THEN "both";
+                """);
+        FilterSpec filter = FilterQueryParser.parse(file);
         assertDoesNotThrow(() -> FilterValidator.validate(filter, collection, Path.of("demo.json")));
     }
 

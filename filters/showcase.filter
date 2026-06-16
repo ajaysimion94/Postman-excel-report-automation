@@ -1,0 +1,64 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Showcase filter — demonstrates the redesigned Summary plus the new variable and
+# IF/ELSE capabilities:
+#   • Capture UNION / INTERSECT / COMPARE output into a $variable
+#   • Derive one $variable from another ($b = FILTER $a WHERE ...)
+#   • Use a runtime variable inside a WHERE value (WHERE userId = $targetUser)
+#   • Compound summary IF conditions (IF $a > 0 AND $b > 0 THEN ...)
+#   • Auto-improved Summary visuals (spacing, zebra tables, right-aligned numbers)
+#
+# Runtime variable used below: targetUser (set it in .env, e.g. targetUser=1).
+# ──────────────────────────────────────────────────────────────────────────────
+
+COLLECTION jsonplaceholder;
+REQUESTS "List all posts", "List all users", "List all todos";
+OUTPUT_PREFIX showcase;
+
+# ── Response-data shaping ───────────────────────────────────────────────────────
+# $targetUser is resolved from runtime/.env variables at evaluation time.
+FILTER "List all posts" WHERE userId = $targetUser;
+COLUMNS "List all posts": id AS "Post ID", userId AS "User", title AS "Title";
+SHAPE "List all posts" ORDER BY id ASC LIMIT 50;
+
+# ── Summary datasets (variables) ────────────────────────────────────────────────
+$POSTS      = FILTER "List all posts" WHERE userId = $targetUser;
+$ALL_POSTS  = FILTER "List all posts" WHERE id > 0;
+$TOP_POSTS  = FILTER $ALL_POSTS WHERE id > 25;          # derived from another variable
+$DONE       = FILTER "List all todos" WHERE completed IS TRUE;
+
+# Capture set-style outputs straight into variables (no separate sheet required):
+$MERGED     = UNION FROM "List all posts", "List all todos" ALL;
+$ID_MATRIX  = COMPARE ON id FROM "List all posts", "List all users";
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUMMARY PAGE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+TITLE "API Showcase Dashboard" COLOR "#1A5276";
+DESCRIPTION "Variables, derived datasets, and richer conditionals" COLOR "#2E86C1";
+
+# ── Key metrics (numbers auto right-align; clean, borderless rows) ──────────────
+KV "Posts for target user" $POSTS;
+KV "All posts"             $ALL_POSTS;
+LV "Posts with id > 25"    $TOP_POSTS;
+LV "Completed todos"       $DONE;
+
+# ── Compound IF condition (AND) ────────────────────────────────────────────────
+KV "Coverage" IF $ALL_POSTS > 0 AND $DONE > 0 THEN "posts and todos present" ELSE "incomplete";
+
+# ── Nested IF for a graded label ───────────────────────────────────────────────
+LV "Volume" IF $ALL_POSTS > 80 THEN "High" ELSE IF $ALL_POSTS > 10 THEN "Medium" ELSE "Low";
+
+# ── Multi-column scorecard with per-row conditional ────────────────────────────
+QT "Scorecard" HEADERS Metric, Count, Level
+  ROW "Target user posts", $POSTS,   IF $POSTS > 0 THEN "OK" ELSE "None"
+  ROW "Completed todos",   $DONE,    IF $DONE > 50 THEN "Good" ELSE "Low";
+
+# ── Tables fed by captured outputs ─────────────────────────────────────────────
+TABLE $ID_MATRIX TITLE "ID comparison (posts vs users)";
+TABLE $MERGED    TITLE "Posts + todos (union)";
+TABLE $POSTS     TITLE "Target user posts" COLUMNS id AS "Post ID", title AS "Title";
+
+# ── Per-request status + execution metrics ─────────────────────────────────────
+STATUS COLOR "#228B22";
+METRICS;

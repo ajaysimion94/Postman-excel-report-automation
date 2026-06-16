@@ -366,4 +366,39 @@ class RowConditionEvaluatorTest {
         // type=A → THEN (val>10) → val=15 → true, AND category=premium → true
         assertTrue(RowConditionEvaluator.evaluate(r, group, Collections.emptyMap(), Instant.now()));
     }
+
+    // ── $variable value resolution ──────────────────────────────────────────────────
+
+    @Test
+    void resolvesVariableValueFromVarsMap() {
+        ObjectNode r = row("userId", 7);
+        RowFilterGroup group = and(rule("userId", "EQ", "$targetUser"));
+        Map<String, String> vars = Map.of("targetUser", "7");
+        assertTrue(RowConditionEvaluator.evaluate(r, group, Collections.emptyMap(), Instant.now(), vars));
+        assertFalse(RowConditionEvaluator.evaluate(row("userId", 8), group, Collections.emptyMap(), Instant.now(), vars));
+    }
+
+    @Test
+    void resolvesVariableValueForNumericComparison() {
+        ObjectNode r = row("score", 80);
+        RowFilterGroup group = and(rule("score", "GT", "$threshold"));
+        assertTrue(RowConditionEvaluator.evaluate(r, group, Collections.emptyMap(), Instant.now(), Map.of("threshold", "50")));
+        assertFalse(RowConditionEvaluator.evaluate(r, group, Collections.emptyMap(), Instant.now(), Map.of("threshold", "90")));
+    }
+
+    @Test
+    void unknownVariableFallsBackToLiteralAndDoesNotMatch() {
+        ObjectNode r = row("userId", 7);
+        RowFilterGroup group = and(rule("userId", "EQ", "$missing"));
+        // $missing not in the (non-empty) vars map → stays literal "$missing" → 7 != "$missing"
+        assertFalse(RowConditionEvaluator.evaluate(r, group, Collections.emptyMap(), Instant.now(), Map.of("other", "1")));
+    }
+
+    @Test
+    void literalDollarValueIsLeftUnchangedWhenNoVarsProvided() {
+        // The 4-arg overload passes an empty vars map; a "$"-prefixed literal stays literal.
+        ObjectNode r = row("code", "$raw");
+        RowFilterGroup group = and(rule("code", "EQ", "$raw"));
+        assertTrue(RowConditionEvaluator.evaluate(r, group, Collections.emptyMap(), Instant.now()));
+    }
 }

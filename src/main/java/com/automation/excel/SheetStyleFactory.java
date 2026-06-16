@@ -80,9 +80,18 @@ public final class SheetStyleFactory {
         return style;
     }
 
-    /** Summary sheet label column (column A) — bold + grey fill. */
+    /** A borderless cell base used by the redesigned Summary sheet for a cleaner, open look. */
+    private CellStyle createBorderlessStyle(Workbook workbook, HorizontalAlignment alignment) {
+        CellStyle style = workbook.createCellStyle();
+        style.setVerticalAlignment(VerticalAlignment.CENTER);
+        style.setAlignment(alignment);
+        style.setWrapText(false);
+        return style;
+    }
+
+    /** Summary sheet label column (column A) — bold + light grey fill, no border. */
     public CellStyle createSummaryLabelStyle(Workbook workbook) {
-        CellStyle style = createTextStyle(workbook, false);
+        CellStyle style = createBorderlessStyle(workbook, HorizontalAlignment.LEFT);
         Font font = workbook.createFont();
         font.setBold(true);
         style.setFont(font);
@@ -91,11 +100,29 @@ public final class SheetStyleFactory {
         return style;
     }
 
-    /** Lighter label style for auto-derived labels from TEXT / LV items — normal weight, light fill. */
+    /** Lighter label style for auto-derived labels from TEXT / LV items — normal weight, light fill, no border. */
     public CellStyle createSummaryAutoLabelStyle(Workbook workbook) {
-        CellStyle style = createTextStyle(workbook, false);
+        CellStyle style = createBorderlessStyle(workbook, HorizontalAlignment.LEFT);
         style.setFillForegroundColor(IndexedColors.GREY_25_PERCENT.getIndex());
         style.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+        return style;
+    }
+
+    /** Summary value cell — borderless, left-aligned for text. */
+    public CellStyle createSummaryValueStyle(Workbook workbook) {
+        return createBorderlessStyle(workbook, HorizontalAlignment.LEFT);
+    }
+
+    /** Summary value cell for numeric content — borderless, right-aligned. */
+    public CellStyle createSummaryNumericStyle(Workbook workbook) {
+        return createBorderlessStyle(workbook, HorizontalAlignment.RIGHT);
+    }
+
+    /** Alternate ("zebra") row fill for Summary tables. {@code numeric} right-aligns the text. */
+    public CellStyle createSummaryZebraStyle(Workbook workbook, boolean numeric) {
+        CellStyle style = createBorderlessStyle(workbook,
+                numeric ? HorizontalAlignment.RIGHT : HorizontalAlignment.LEFT);
+        applyFill(workbook, style, IndexedColors.GREY_25_PERCENT, "#EEF3F8");
         return style;
     }
 

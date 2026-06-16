@@ -6,7 +6,7 @@
 #
 # Output columns: <field> | _in_<source1> | _in_<source2> | ... | _count
 
-COLLECTION jsonplaceholder;
+COLLECTION my-collection;   # TEMPLATE: replace with your collection; the request and field names below are placeholders
 REQUESTS "List posts", "List archived posts", "List users";
 OUTPUT_PREFIX compare-example;
 

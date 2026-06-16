@@ -489,6 +489,48 @@ public final class FilterValidator {
                                 "Summary query $" + query.variableName() + " references unknown table \"" +
                                         named.tableName() + "\". Define LOOKUP_TABLE \"" + named.tableName() + "\" first.");
                     }
+                } else if (query.source() instanceof SummaryQuerySource.UnionRows union) {
+                    validateSummarySources(union.spec().sources(), available,
+                            "Summary query $" + query.variableName());
+                } else if (query.source() instanceof SummaryQuerySource.SetOpRows setOp) {
+                    String type = setOp.spec().type() == null ? "" : setOp.spec().type().toUpperCase();
+                    if (!Set.of("INTERSECT", "EXCEPT", "DIFF").contains(type)) {
+                        throw new IllegalArgumentException(
+                                "Summary query $" + query.variableName() + " has unknown set operation \"" +
+                                        setOp.spec().type() + "\". Use INTERSECT, EXCEPT, or DIFF.");
+                    }
+                    validateSummarySources(setOp.spec().sources(), available,
+                            "Summary query $" + query.variableName());
+                } else if (query.source() instanceof SummaryQuerySource.CompareRows compare) {
+                    if (compare.spec().field() == null || compare.spec().field().isBlank()) {
+                        throw new IllegalArgumentException(
+                                "Summary query $" + query.variableName() + " (COMPARE) must specify a non-blank field.");
+                    }
+                    validateSummarySources(compare.spec().sources(), available,
+                            "Summary query $" + query.variableName());
+                    if (compare.spec().where() != null) {
+                        validateRowFilterGroup(compare.spec().where(), "summary.$" + query.variableName() + ".where");
+                    }
+                    if (compare.spec().having() != null) {
+                        validateRowFilterGroup(compare.spec().having(), "summary.$" + query.variableName() + ".having");
+                    }
+                } else if (query.source() instanceof SummaryQuerySource.DerivedFilter derived) {
+                    if (derived.sourceVariable() == null || derived.sourceVariable().isBlank()) {
+                        throw new IllegalArgumentException(
+                                "Summary query $" + query.variableName() + " is missing a source variable.");
+                    }
+                    if (derived.sourceVariable().equals(query.variableName())) {
+                        throw new IllegalArgumentException(
+                                "Summary query $" + query.variableName() + " cannot derive from itself.");
+                    }
+                    if (!definedQueries.contains(derived.sourceVariable())) {
+                        throw new IllegalArgumentException(
+                                "Summary query $" + query.variableName() + " derives from undefined variable $" +
+                                        derived.sourceVariable() + ". Define it earlier in the file.");
+                    }
+                    if (derived.filter() != null) {
+                        validateRowFilterGroup(derived.filter(), "summary.$" + query.variableName());
+                    }
                 }
             }
             for (SummaryItem item : filter.summary().items()) {
@@ -532,18 +574,49 @@ public final class FilterValidator {
                             "Summary " + context + " references undefined variable $" + var.name() + ".");
                 }
             } else if (part instanceof SummaryTextPart.IfElse ifElse) {
-                if (!definedQueries.contains(ifElse.variableName())) {
-                    throw new IllegalArgumentException(
-                            "Summary " + context + " IF condition references undefined variable $" + ifElse.variableName() + ".");
-                }
-                String op = ifElse.op();
-                if (!Set.of("=", "==", "!=", "<>", ">", ">=", "<", "<=").contains(op)) {
-                    throw new IllegalArgumentException(
-                            "Summary " + context + " IF has unsupported operator \"" + op + "\". " +
-                            "Supported: =, ==, !=, <>, >, >=, <, <=.");
-                }
+                validateSummaryCondition(ifElse.condition(), definedQueries, context);
                 validateSummaryTextParts(ifElse.thenParts(), definedQueries, context + " IF THEN");
                 validateSummaryTextParts(ifElse.elseParts(), definedQueries, context + " IF ELSE");
+            }
+        }
+    }
+
+    /** Recursively validates a summary IF condition tree: each term's variable must be defined and op supported. */
+    private static void validateSummaryCondition(SummaryTextPart.Condition cond, Set<String> definedQueries, String context) {
+        if (cond == null) {
+            return;
+        }
+        if (cond instanceof SummaryTextPart.Condition.Term term) {
+            if (!definedQueries.contains(term.variableName())) {
+                throw new IllegalArgumentException(
+                        "Summary " + context + " IF condition references undefined variable $" + term.variableName() + ".");
+            }
+            if (!Set.of("=", "==", "!=", "<>", ">", ">=", "<", "<=").contains(term.op())) {
+                throw new IllegalArgumentException(
+                        "Summary " + context + " IF has unsupported operator \"" + term.op() + "\". " +
+                        "Supported: =, ==, !=, <>, >, >=, <, <=.");
+            }
+        } else if (cond instanceof SummaryTextPart.Condition.And and) {
+            validateSummaryCondition(and.left(), definedQueries, context);
+            validateSummaryCondition(and.right(), definedQueries, context);
+        } else if (cond instanceof SummaryTextPart.Condition.Or or) {
+            validateSummaryCondition(or.left(), definedQueries, context);
+            validateSummaryCondition(or.right(), definedQueries, context);
+        }
+    }
+
+    /** Validates that an inline summary source list has at least two known request names. */
+    private static void validateSummarySources(List<String> sources, Set<String> available, String label) {
+        if (sources == null || sources.size() < 2) {
+            throw new IllegalArgumentException(label + " must include at least 2 sources.");
+        }
+        for (String source : sources) {
+            if (source == null || source.isBlank()) {
+                throw new IllegalArgumentException(label + " has a blank source entry.");
+            }
+            if (!available.contains(source)) {
+                throw new IllegalArgumentException(
+                        label + " references unknown request \"" + source + "\". Available: " + available);
             }
         }
     }

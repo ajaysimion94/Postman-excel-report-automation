@@ -495,4 +495,107 @@ class FilterQueryParserTest {
         SummaryTextPart.IfElse inner = (SummaryTextPart.IfElse) outer.thenParts().get(0);
         assertEquals("500", inner.value());
     }
+
+    // ── Variables across queries ($var sources) ────────────────────────────────────
+
+    @Test
+    void capturesUnionIntoVariable() throws Exception {
+        Path file = Files.createTempFile("var-union", ".filter");
+        Files.writeString(file, """
+                REQUESTS "List posts", "List users";
+                $MERGED = UNION FROM "List posts", "List users" ALL;
+                """);
+
+        FilterSpec spec = FilterQueryParser.parse(file);
+        SummaryQuerySpec query = spec.summary().queries().get("MERGED");
+        assertNotNull(query);
+        assertTrue(query.source() instanceof SummaryQuerySource.UnionRows);
+        UnionSpec union = ((SummaryQuerySource.UnionRows) query.source()).spec();
+        assertEquals(List.of("List posts", "List users"), union.sources());
+        assertTrue(union.all());
+    }
+
+    @Test
+    void capturesSetOpIntoVariable() throws Exception {
+        Path file = Files.createTempFile("var-setop", ".filter");
+        Files.writeString(file, """
+                REQUESTS "List posts", "List users";
+                $COMMON = INTERSECT FROM "List posts", "List users";
+                $ONLY = EXCEPT FROM "List posts", "List users";
+                $UNIQUE = DIFF FROM "List posts", "List users";
+                """);
+
+        FilterSpec spec = FilterQueryParser.parse(file);
+        assertEquals("INTERSECT",
+                ((SummaryQuerySource.SetOpRows) spec.summary().queries().get("COMMON").source()).spec().type());
+        assertEquals("EXCEPT",
+                ((SummaryQuerySource.SetOpRows) spec.summary().queries().get("ONLY").source()).spec().type());
+        assertEquals("DIFF",
+                ((SummaryQuerySource.SetOpRows) spec.summary().queries().get("UNIQUE").source()).spec().type());
+    }
+
+    @Test
+    void capturesCompareIntoVariable() throws Exception {
+        Path file = Files.createTempFile("var-compare", ".filter");
+        Files.writeString(file, """
+                REQUESTS "List posts", "List users";
+                $CMP = COMPARE ON id FROM "List posts", "List users";
+                """);
+
+        FilterSpec spec = FilterQueryParser.parse(file);
+        SummaryQuerySource.CompareRows source =
+                (SummaryQuerySource.CompareRows) spec.summary().queries().get("CMP").source();
+        assertEquals("id", source.spec().field());
+        assertEquals(List.of("List posts", "List users"), source.spec().sources());
+    }
+
+    @Test
+    void derivesVariableFromAnotherVariable() throws Exception {
+        Path file = Files.createTempFile("var-derived", ".filter");
+        Files.writeString(file, """
+                REQUESTS "List posts";
+                $ALL = FILTER "List posts" WHERE id > 0;
+                $TOP = FILTER $ALL WHERE id > 10;
+                """);
+
+        FilterSpec spec = FilterQueryParser.parse(file);
+        SummaryQuerySource.DerivedFilter derived =
+                (SummaryQuerySource.DerivedFilter) spec.summary().queries().get("TOP").source();
+        assertEquals("ALL", derived.sourceVariable());
+        assertNotNull(derived.filter());
+    }
+
+    @Test
+    void parsesVariableReferenceInWhereValue() throws Exception {
+        Path file = Files.createTempFile("var-where", ".filter");
+        Files.writeString(file, """
+                REQUESTS "List posts";
+                FILTER "List posts" WHERE userId = $targetUser;
+                """);
+
+        FilterSpec spec = FilterQueryParser.parse(file);
+        RowFilterGroup group = spec.rowFilters().get("List posts");
+        assertEquals("userId", group.rules().get(0).field());
+        assertEquals("EQ", group.rules().get(0).op());
+        assertEquals("$targetUser", group.rules().get(0).value());
+    }
+
+    @Test
+    void parsesCompoundSummaryIfCondition() throws Exception {
+        Path file = Files.createTempFile("compound-if", ".filter");
+        Files.writeString(file, """
+                REQUESTS "List posts", "List users";
+                $A = FILTER "List posts" WHERE id > 0;
+                $B = FILTER "List users" WHERE id > 0;
+                TEXT IF $A > 0 AND $B > 0 THEN "both" ELSE "missing";
+                """);
+
+        FilterSpec spec = FilterQueryParser.parse(file);
+        SummaryItem.Text text = (SummaryItem.Text) spec.summary().items().get(0);
+        SummaryTextPart.IfElse ifElse = (SummaryTextPart.IfElse) text.parts().get(0);
+        assertTrue(ifElse.condition() instanceof SummaryTextPart.Condition.And);
+        SummaryTextPart.Condition.And and = (SummaryTextPart.Condition.And) ifElse.condition();
+        assertTrue(and.left() instanceof SummaryTextPart.Condition.Term);
+        assertTrue(and.right() instanceof SummaryTextPart.Condition.Term);
+    }
 }

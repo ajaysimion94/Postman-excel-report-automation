@@ -386,7 +386,7 @@ public final class FilterQueryParser {
             return;
         }
 
-        throw ts.error("Unknown statement. Supported: COLLECTION, OUTPUT_PREFIX, REQUESTS, REQUEST, COLUMNS, FILTER, DATE_CONFIG, LOOKUP_TABLE, SHAPE, UNION, INTERSECT, EXCEPT, COMPARE, EXPAND, TITLE, DESCRIPTION, TEXT, KV, LV, TABLE, LABEL_TABLE, QT, QUICK_TABLE, METRICS, STATUS, $var = FILTER ..., $var;");
+        throw ts.error("Unknown statement. Supported: SET, COLLECTION, OUTPUT_PREFIX, REQUESTS, REQUEST, COLUMNS, FILTER, DATE_CONFIG, LOOKUP_TABLE, SHAPE, UNION, INTERSECT, EXCEPT, DIFF, COMPARE, EXPAND, TITLE, DESCRIPTION, TEXT, KV, LV, TABLE, LABEL_TABLE, QT, QUICK_TABLE, METRICS, STATUS, $var = FILTER|TABLE|UNION|INTERSECT|EXCEPT|DIFF|COMPARE ..., $var;");
     }
 
     private static void parseSummaryDollarStatement(TokenStream ts, Builder b) {
@@ -396,10 +396,18 @@ public final class FilterQueryParser {
                 throw ts.error("Duplicate summary variable: $" + varName);
             }
             if (ts.matchKeyword("FILTER")) {
+                // FILTER $other WHERE ...  → derive from another variable
+                if (ts.matchSymbol("$")) {
+                    String sourceVar = ts.readIdentifierLike();
+                    ts.expectKeyword("WHERE");
+                    RowFilterGroup filter = compileWhere(parseExpr(ts), ts);
+                    b.summaryQueries.put(varName, new SummaryQuerySpec(varName,
+                            new SummaryQuerySource.DerivedFilter(sourceVar, filter)));
+                    return;
+                }
                 String requestKey = ts.readValue();
                 ts.expectKeyword("WHERE");
-                Expr expr = parseExpr(ts);
-                RowFilterGroup filter = compileWhere(expr, ts);
+                RowFilterGroup filter = compileWhere(parseExpr(ts), ts);
                 b.summaryQueries.put(varName, new SummaryQuerySpec(varName,
                         new SummaryQuerySource.FilterRows(requestKey, filter)));
                 return;
@@ -410,7 +418,35 @@ public final class FilterQueryParser {
                         new SummaryQuerySource.NamedTable(tableName)));
                 return;
             }
-            throw ts.error("Expected FILTER or TABLE after $name =");
+            if (ts.matchKeyword("UNION")) {
+                ts.expectKeyword("FROM");
+                List<String> sources = ts.readCommaSeparatedValues();
+                boolean all = ts.matchKeyword("ALL");
+                b.summaryQueries.put(varName, new SummaryQuerySpec(varName,
+                        new SummaryQuerySource.UnionRows(new UnionSpec(varName, List.copyOf(sources), all))));
+                return;
+            }
+            if (ts.matchKeyword("INTERSECT") || ts.matchKeyword("EXCEPT") || ts.matchKeyword("DIFF")) {
+                String type = ts.previousText().toUpperCase();
+                ts.expectKeyword("FROM");
+                List<String> sources = ts.readCommaSeparatedValues();
+                b.summaryQueries.put(varName, new SummaryQuerySpec(varName,
+                        new SummaryQuerySource.SetOpRows(new SetOpSpec(varName, type, List.copyOf(sources)))));
+                return;
+            }
+            if (ts.matchKeyword("COMPARE")) {
+                ts.expectKeyword("ON");
+                String field = ts.readValue();
+                ts.expectKeyword("FROM");
+                List<String> sources = ts.readCommaSeparatedValues();
+                RowFilterGroup where = ts.matchKeyword("WHERE") ? compileWhere(parseExpr(ts), ts) : null;
+                RowFilterGroup having = ts.matchKeyword("HAVING") ? compileWhere(parseExpr(ts), ts) : null;
+                b.summaryQueries.put(varName, new SummaryQuerySpec(varName,
+                        new SummaryQuerySource.CompareRows(
+                                new CompareSpec(varName, field, List.copyOf(sources), where, having))));
+                return;
+            }
+            throw ts.error("Expected FILTER, TABLE, UNION, INTERSECT, EXCEPT, DIFF, or COMPARE after $name =");
         }
         parseSummaryTableItem(ts, b, varName);
     }
@@ -520,24 +556,20 @@ public final class FilterQueryParser {
 
     /**
      * Parses a summary IF/ELSE conditional inside a text expression.
-     * Syntax: {@code IF $variable op value THEN textExpr [ELSE textExpr]}
-     * Where {@code op} is =, !=, &gt;, &gt;=, &lt;, &lt;=.
+     * Syntax: {@code IF <condition> THEN textExpr [ELSE textExpr]} where {@code <condition>}
+     * is one or more {@code $variable op value} terms combined with {@code AND}/{@code OR}
+     * and optional parentheses. {@code op} is one of =, !=, &gt;, &gt;=, &lt;, &lt;=.
      * The THEN/ELSE branches are full text expressions (can use +, $vars, nested IF).
      *
      * <p>Examples:
      * <pre>
      *   IF $count > 0 THEN $count + " found" ELSE "none found"
-     *   IF $success = true THEN "All passed" ELSE "Some failed"
+     *   IF $a > 0 AND $b > 0 THEN "both" ELSE "missing"
+     *   IF ($a > 0 OR $b > 0) AND $c = active THEN "ok"
      * </pre>
      */
     private static SummaryTextPart.IfElse parseSummaryIfElse(TokenStream ts) {
-        // Condition: $variable op value
-        if (!ts.matchSymbol("$")) {
-            throw ts.error("Expected $variable after IF in summary expression");
-        }
-        String variableName = ts.readIdentifierLike();
-        String op = ts.readSymbolOp();
-        String value = ts.readValue();
+        SummaryTextPart.Condition condition = parseSummaryCondOr(ts);
 
         ts.expectKeyword("THEN");
         List<SummaryTextPart> thenParts = parseSummaryTextExpr(ts);
@@ -547,7 +579,38 @@ public final class FilterQueryParser {
             elseParts = parseSummaryTextExpr(ts);
         }
 
-        return new SummaryTextPart.IfElse(variableName, op, value, thenParts, elseParts);
+        return new SummaryTextPart.IfElse(condition, thenParts, elseParts);
+    }
+
+    private static SummaryTextPart.Condition parseSummaryCondOr(TokenStream ts) {
+        SummaryTextPart.Condition left = parseSummaryCondAnd(ts);
+        while (ts.matchKeyword("OR")) {
+            left = new SummaryTextPart.Condition.Or(left, parseSummaryCondAnd(ts));
+        }
+        return left;
+    }
+
+    private static SummaryTextPart.Condition parseSummaryCondAnd(TokenStream ts) {
+        SummaryTextPart.Condition left = parseSummaryCondTerm(ts);
+        while (ts.matchKeyword("AND")) {
+            left = new SummaryTextPart.Condition.And(left, parseSummaryCondTerm(ts));
+        }
+        return left;
+    }
+
+    private static SummaryTextPart.Condition parseSummaryCondTerm(TokenStream ts) {
+        if (ts.matchSymbol("(")) {
+            SummaryTextPart.Condition inner = parseSummaryCondOr(ts);
+            ts.expectSymbol(")");
+            return inner;
+        }
+        if (!ts.matchSymbol("$")) {
+            throw ts.error("Expected $variable in summary IF condition");
+        }
+        String variableName = ts.readIdentifierLike();
+        String op = ts.readSymbolOp();
+        String value = ts.readValue();
+        return new SummaryTextPart.Condition.Term(variableName, op, value);
     }
 
     private static List<SortSpec> parseOrderBy(TokenStream ts) {
@@ -744,9 +807,9 @@ public final class FilterQueryParser {
         }
 
         if (ts.matchKeyword("BETWEEN")) {
-            String from = ts.readValue();
+            String from = readPredicateValue(ts);
             ts.expectKeyword("AND");
-            String to = ts.readValue();
+            String to = readPredicateValue(ts);
             return new PredicateExpr(new RowFilterRule(field, "DATE_RANGE", null, from, to));
         }
 
@@ -755,19 +818,19 @@ public final class FilterQueryParser {
         }
 
         if (ts.matchKeyword("CONTAINS")) {
-            return new PredicateExpr(new RowFilterRule(field, "CONTAINS", ts.readValue(), null, null));
+            return new PredicateExpr(new RowFilterRule(field, "CONTAINS", readPredicateValue(ts), null, null));
         }
         if (ts.matchKeyword("NOT_CONTAINS")) {
-            return new PredicateExpr(new RowFilterRule(field, "NOT_CONTAINS", ts.readValue(), null, null));
+            return new PredicateExpr(new RowFilterRule(field, "NOT_CONTAINS", readPredicateValue(ts), null, null));
         }
         if (ts.matchKeyword("STARTS_WITH")) {
-            return new PredicateExpr(new RowFilterRule(field, "STARTS_WITH", ts.readValue(), null, null));
+            return new PredicateExpr(new RowFilterRule(field, "STARTS_WITH", readPredicateValue(ts), null, null));
         }
         if (ts.matchKeyword("ENDS_WITH")) {
-            return new PredicateExpr(new RowFilterRule(field, "ENDS_WITH", ts.readValue(), null, null));
+            return new PredicateExpr(new RowFilterRule(field, "ENDS_WITH", readPredicateValue(ts), null, null));
         }
         if (ts.matchKeyword("REGEX")) {
-            return new PredicateExpr(new RowFilterRule(field, "REGEX", ts.readValue(), null, null));
+            return new PredicateExpr(new RowFilterRule(field, "REGEX", readPredicateValue(ts), null, null));
         }
         if (ts.matchKeyword("LIKE") || ts.matchKeyword("ILIKE")) {
             String regex = sqlLikeToRegex(ts.readValue());
@@ -775,7 +838,7 @@ public final class FilterQueryParser {
         }
 
         String symbol = ts.readSymbolOp();
-        String value = ts.readValue();
+        String value = readPredicateValue(ts);
         String mapped = switch (symbol) {
             case "=" -> "EQ";
             case "!=" -> "NEQ";
@@ -786,6 +849,18 @@ public final class FilterQueryParser {
             default -> throw ts.error("Unsupported operator: " + symbol);
         };
         return new PredicateExpr(new RowFilterRule(field, mapped, value, null, null));
+    }
+
+    /**
+     * Reads a predicate comparison value. Supports a {@code $name} variable reference
+     * (resolved at evaluation time against the runtime variable map) in addition to plain
+     * literals and quoted strings. A bare {@code $foo} is stored as the literal {@code "$foo"}.
+     */
+    private static String readPredicateValue(TokenStream ts) {
+        if (ts.matchSymbol("$")) {
+            return "$" + ts.readIdentifierLike();
+        }
+        return ts.readValue();
     }
 
     private static List<String> parseInValues(TokenStream ts) {
@@ -1043,6 +1118,11 @@ public final class FilterQueryParser {
 
         String peekText() {
             return peek().text;
+        }
+
+        /** Text of the most recently consumed token (used to recover which keyword matched). */
+        String previousText() {
+            return index > 0 ? tokens.get(index - 1).text : "";
         }
 
         void expectSymbol(String symbol) {

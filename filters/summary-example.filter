@@ -1,4 +1,4 @@
-COLLECTION jsonplaceholder;
+COLLECTION my-collection;   # TEMPLATE: replace with your collection; the request and field names below are placeholders
 REQUESTS "List posts";
 
 FILTER "List posts" WHERE userId = 1;

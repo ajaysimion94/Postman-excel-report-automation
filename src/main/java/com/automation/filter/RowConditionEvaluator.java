@@ -70,12 +70,25 @@ public final class RowConditionEvaluator {
      */
     public static boolean evaluate(ObjectNode row, RowFilterGroup group,
                                    Map<String, DateFieldConfig> dateConfig, Instant now) {
+        return evaluate(row, group, dateConfig, now, Map.of());
+    }
+
+    /**
+     * Same as {@link #evaluate(ObjectNode, RowFilterGroup, Map, Instant)} but additionally
+     * resolves {@code $name} variable references in rule values against {@code vars}
+     * (typically the runtime/env variable map). A value written as {@code $foo} is replaced
+     * with {@code vars.get("foo")} before comparison; unknown variables emit a warning and
+     * fall back to the literal text.
+     */
+    public static boolean evaluate(ObjectNode row, RowFilterGroup group,
+                                   Map<String, DateFieldConfig> dateConfig, Instant now,
+                                   Map<String, String> vars) {
         if (group == null) {
             return true;
         }
 
         if (group.expression() != null) {
-            return evaluateExpression(row, group.expression(), dateConfig, now);
+            return evaluateExpression(row, group.expression(), dateConfig, now, vars);
         }
 
         if (group.rules() == null || group.rules().isEmpty()) {
@@ -85,7 +98,7 @@ public final class RowConditionEvaluator {
         boolean isAnd = group.logic() == null || !"OR".equalsIgnoreCase(group.logic());
 
         for (RowFilterRule rule : group.rules()) {
-            boolean result = evaluateRule(row, rule, dateConfig, now);
+            boolean result = evaluateRule(row, rule, dateConfig, now, vars);
             if (isAnd && !result) return false;   // AND short-circuit fail
             if (!isAnd && result) return true;    // OR short-circuit pass
         }
@@ -93,28 +106,29 @@ public final class RowConditionEvaluator {
     }
 
     private static boolean evaluateExpression(ObjectNode row, RowFilterExpression expr,
-                                              Map<String, DateFieldConfig> dateConfig, Instant now) {
+                                              Map<String, DateFieldConfig> dateConfig, Instant now,
+                                              Map<String, String> vars) {
         if (expr instanceof RowFilterExpression.Predicate predicate) {
-            return evaluateRule(row, predicate.rule(), dateConfig, now);
+            return evaluateRule(row, predicate.rule(), dateConfig, now, vars);
         }
         if (expr instanceof RowFilterExpression.And andExpr) {
-            return evaluateExpression(row, andExpr.left(), dateConfig, now)
-                    && evaluateExpression(row, andExpr.right(), dateConfig, now);
+            return evaluateExpression(row, andExpr.left(), dateConfig, now, vars)
+                    && evaluateExpression(row, andExpr.right(), dateConfig, now, vars);
         }
         if (expr instanceof RowFilterExpression.Or orExpr) {
-            return evaluateExpression(row, orExpr.left(), dateConfig, now)
-                    || evaluateExpression(row, orExpr.right(), dateConfig, now);
+            return evaluateExpression(row, orExpr.left(), dateConfig, now, vars)
+                    || evaluateExpression(row, orExpr.right(), dateConfig, now, vars);
         }
         if (expr instanceof RowFilterExpression.Not notExpr) {
-            return !evaluateExpression(row, notExpr.expr(), dateConfig, now);
+            return !evaluateExpression(row, notExpr.expr(), dateConfig, now, vars);
         }
         if (expr instanceof RowFilterExpression.IfElse ifElse) {
-            boolean conditionResult = evaluateExpression(row, ifElse.condition(), dateConfig, now);
+            boolean conditionResult = evaluateExpression(row, ifElse.condition(), dateConfig, now, vars);
             if (conditionResult) {
-                return evaluateExpression(row, ifElse.thenExpr(), dateConfig, now);
+                return evaluateExpression(row, ifElse.thenExpr(), dateConfig, now, vars);
             } else {
                 return ifElse.elseExpr() != null
-                        ? evaluateExpression(row, ifElse.elseExpr(), dateConfig, now)
+                        ? evaluateExpression(row, ifElse.elseExpr(), dateConfig, now, vars)
                         : true; // No ELSE clause → condition was false but nothing excludes the row
             }
         }
@@ -124,7 +138,8 @@ public final class RowConditionEvaluator {
     // ── rule dispatch ─────────────────────────────────────────────────────────────
 
     private static boolean evaluateRule(ObjectNode row, RowFilterRule rule,
-                                        Map<String, DateFieldConfig> dateConfig, Instant now) {
+                                        Map<String, DateFieldConfig> dateConfig, Instant now,
+                                        Map<String, String> vars) {
         if (rule == null || rule.field() == null || rule.op() == null) {
             System.err.println("[WARN] Row filter rule is missing field or op — rule skipped.");
             return true;
@@ -132,6 +147,9 @@ public final class RowConditionEvaluator {
 
         String op    = rule.op().toUpperCase();
         String field = rule.field();
+        String value = resolveVars(rule.value(), vars);
+        String from  = resolveVars(rule.from(), vars);
+        String to    = resolveVars(rule.to(), vars);
 
         // IS_NULL / IS_NOT_NULL do not need the node to be present
         if ("IS_NULL".equals(op)) {
@@ -152,26 +170,62 @@ public final class RowConditionEvaluator {
         return switch (op) {
             case "IS_TRUE"      -> isTrueCheck(node);
             case "IS_FALSE"     -> isFalseCheck(node);
-            case "EQ"           -> compareValues(node, rule.value()) == 0;
-            case "NEQ"          -> compareValues(node, rule.value()) != 0;
-            case "GT"           -> compareValues(node, rule.value()) >  0;
-            case "GTE"          -> compareValues(node, rule.value()) >= 0;
-            case "LT"           -> compareValues(node, rule.value()) <  0;
-            case "LTE"          -> compareValues(node, rule.value()) <= 0;
-            case "CONTAINS"     -> stringContains(node, rule.value(), true);
-            case "NOT_CONTAINS" -> !stringContains(node, rule.value(), true);
-            case "STARTS_WITH"  -> stringStartsWith(node, rule.value());
-            case "ENDS_WITH"    -> stringEndsWith(node, rule.value());
-            case "IN"           -> inCheck(node, rule.value());
-            case "NOT_IN"       -> !inCheck(node, rule.value());
-            case "REGEX"        -> regexCheck(node, rule.value(), field);
-            case "DATE_PRESET"  -> datePresetCheck(node, rule.value(), field, dateConfig, now);
-            case "DATE_RANGE"   -> dateRangeCheck(node, rule.from(), rule.to(), field, dateConfig, now);
+            case "EQ"           -> compareValues(node, value) == 0;
+            case "NEQ"          -> compareValues(node, value) != 0;
+            case "GT"           -> compareValues(node, value) >  0;
+            case "GTE"          -> compareValues(node, value) >= 0;
+            case "LT"           -> compareValues(node, value) <  0;
+            case "LTE"          -> compareValues(node, value) <= 0;
+            case "CONTAINS"     -> stringContains(node, value, true);
+            case "NOT_CONTAINS" -> !stringContains(node, value, true);
+            case "STARTS_WITH"  -> stringStartsWith(node, value);
+            case "ENDS_WITH"    -> stringEndsWith(node, value);
+            case "IN"           -> inCheck(node, value);
+            case "NOT_IN"       -> !inCheck(node, value);
+            case "REGEX"        -> regexCheck(node, value, field);
+            case "DATE_PRESET"  -> datePresetCheck(node, value, field, dateConfig, now);
+            case "DATE_RANGE"   -> dateRangeCheck(node, from, to, field, dateConfig, now);
             default -> {
                 System.err.printf("[WARN] Unknown row filter operator \"%s\" for field \"%s\" — rule skipped.%n", op, field);
                 yield true;
             }
         };
+    }
+
+    // ── variable resolution ───────────────────────────────────────────────────────
+
+    /**
+     * Resolves a {@code $name} variable reference in a rule value against {@code vars}.
+     * A value of the form {@code $identifier} is replaced with the variable's value;
+     * unknown variables emit a warning and fall back to the literal text. Any other value
+     * (including literals that merely start with {@code $} but are not valid identifiers)
+     * is returned unchanged.
+     */
+    private static String resolveVars(String value, Map<String, String> vars) {
+        if (value == null || vars == null || vars.isEmpty()) {
+            return value;
+        }
+        if (value.length() > 1 && value.charAt(0) == '$' && isIdentifier(value.substring(1))) {
+            String key = value.substring(1);
+            if (vars.containsKey(key)) {
+                return vars.get(key);
+            }
+            System.err.printf("[WARN] Row filter value variable \"$%s\" is not defined — using literal.%n", key);
+        }
+        return value;
+    }
+
+    private static boolean isIdentifier(String s) {
+        if (s.isEmpty() || !(Character.isLetter(s.charAt(0)) || s.charAt(0) == '_')) {
+            return false;
+        }
+        for (int i = 1; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (!(Character.isLetterOrDigit(c) || c == '_')) {
+                return false;
+            }
+        }
+        return true;
     }
 
     // ── boolean checks ────────────────────────────────────────────────────────────

@@ -777,4 +777,128 @@ class ExcelReportGeneratorTest {
             throw new AssertionError("Should find the IF/ELSE KV row");
         }
     }
+
+    // ── Variables across queries (B1/B2/B3) ─────────────────────────────────────────
+
+    private static String kvValue(org.apache.poi.ss.usermodel.Sheet summary, String label) {
+        for (int i = 0; i <= summary.getLastRowNum(); i++) {
+            var row = summary.getRow(i);
+            if (row != null && row.getCell(0) != null && label.equals(row.getCell(0).getStringCellValue())) {
+                return row.getCell(1) == null ? null : row.getCell(1).getStringCellValue();
+            }
+        }
+        return null;
+    }
+
+    private static boolean anyCellEquals(org.apache.poi.ss.usermodel.Sheet sheet, String text) {
+        for (int i = 0; i <= sheet.getLastRowNum(); i++) {
+            var row = sheet.getRow(i);
+            if (row == null) continue;
+            for (int c = 0; c < row.getLastCellNum(); c++) {
+                var cell = row.getCell(c);
+                if (cell != null && cell.getCellType() == org.apache.poi.ss.usermodel.CellType.STRING
+                        && text.equals(cell.getStringCellValue())) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    @Test
+    void summaryCapturesCompareVariableIntoTable() throws Exception {
+        Path filterFile = Files.createTempFile("var-compare", ".filter");
+        Files.writeString(filterFile, """
+                REQUESTS "List Posts", "List Users";
+                $CMP = COMPARE ON id FROM "List Posts", "List Users";
+                TABLE $CMP TITLE "Compared";
+                """);
+        FilterSpec spec = FilterQueryParser.parse(filterFile);
+        Path output = Files.createTempFile("report-var-compare", ".xlsx");
+        RuntimeConfig config = new RuntimeConfig(output, null, output, true, Map.of(), spec);
+        PostmanCollection collection = new PostmanCollection("Demo", Map.of(), List.of());
+
+        String posts = "[{\"id\":1},{\"id\":2}]";
+        String users = "[{\"id\":2},{\"id\":3}]";
+        List<ExecutionResult> results = List.of(
+                new ExecutionResult("Root", "List Posts", "GET", "https://example.com/posts",
+                        200, 50, true, "", posts, posts, Instant.now(), List.of()),
+                new ExecutionResult("Root", "List Users", "GET", "https://example.com/users",
+                        200, 50, true, "", users, users, Instant.now(), List.of())
+        );
+
+        new ExcelReportGenerator().generate(collection, results, config, new RequestExecutor());
+
+        try (InputStream is = Files.newInputStream(output);
+             XSSFWorkbook wb = new XSSFWorkbook(is)) {
+            var summary = wb.getSheet("Summary");
+            assertNotNull(summary);
+            // The captured COMPARE matrix should render its provenance columns into the summary table.
+            assertTrue(anyCellEquals(summary, "_count"), "Summary should contain the COMPARE _count column");
+            assertTrue(anyCellEquals(summary, "Compared"), "Summary should contain the table title");
+        }
+    }
+
+    @Test
+    void summaryDerivedVariableFiltersBaseVariable() throws Exception {
+        Path filterFile = Files.createTempFile("var-derived", ".filter");
+        Files.writeString(filterFile, """
+                REQUESTS "List Posts";
+                $ALL = FILTER "List Posts" WHERE id > 0;
+                $TOP = FILTER $ALL WHERE id > 2;
+                KV "All" $ALL;
+                KV "Top" $TOP;
+                """);
+        FilterSpec spec = FilterQueryParser.parse(filterFile);
+        Path output = Files.createTempFile("report-var-derived", ".xlsx");
+        RuntimeConfig config = new RuntimeConfig(output, null, output, true, Map.of(), spec);
+        PostmanCollection collection = new PostmanCollection("Demo", Map.of(), List.of());
+
+        String body = "[{\"id\":1},{\"id\":2},{\"id\":3},{\"id\":4},{\"id\":5}]";
+        List<ExecutionResult> results = List.of(
+                new ExecutionResult("Root", "List Posts", "GET", "https://example.com/posts",
+                        200, 50, true, "", body, body, Instant.now(), List.of())
+        );
+
+        new ExcelReportGenerator().generate(collection, results, config, new RequestExecutor());
+
+        try (InputStream is = Files.newInputStream(output);
+             XSSFWorkbook wb = new XSSFWorkbook(is)) {
+            var summary = wb.getSheet("Summary");
+            assertNotNull(summary);
+            assertEquals("5", kvValue(summary, "All"));   // all 5 rows
+            assertEquals("3", kvValue(summary, "Top"));   // derived: id > 2 → 3,4,5
+        }
+    }
+
+    @Test
+    void whereValueVariableResolvesFromRuntimeVariables() throws Exception {
+        Path filterFile = Files.createTempFile("var-where", ".filter");
+        Files.writeString(filterFile, """
+                REQUESTS "List Posts";
+                $M = FILTER "List Posts" WHERE userId = $targetUser;
+                KV "Matches" $M;
+                """);
+        FilterSpec spec = FilterQueryParser.parse(filterFile);
+        Path output = Files.createTempFile("report-var-where", ".xlsx");
+        RuntimeConfig config = new RuntimeConfig(output, null, output, true, Map.of("targetUser", "1"), spec);
+        PostmanCollection collection = new PostmanCollection("Demo", Map.of(), List.of());
+
+        String body = "[{\"id\":1,\"userId\":1},{\"id\":2,\"userId\":1},{\"id\":3,\"userId\":1},"
+                + "{\"id\":4,\"userId\":2},{\"id\":5,\"userId\":2}]";
+        List<ExecutionResult> results = List.of(
+                new ExecutionResult("Root", "List Posts", "GET", "https://example.com/posts",
+                        200, 50, true, "", body, body, Instant.now(), List.of())
+        );
+
+        new ExcelReportGenerator().generate(collection, results, config, new RequestExecutor());
+
+        try (InputStream is = Files.newInputStream(output);
+             XSSFWorkbook wb = new XSSFWorkbook(is)) {
+            var summary = wb.getSheet("Summary");
+            assertNotNull(summary);
+            // $targetUser resolves to "1" from runtime variables → 3 rows match userId == 1
+            assertEquals("3", kvValue(summary, "Matches"));
+        }
+    }
 }

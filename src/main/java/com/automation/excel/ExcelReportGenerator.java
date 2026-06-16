@@ -74,12 +74,16 @@ public final class ExcelReportGenerator {
     /** Excel hard limit for cell text content. */
     private static final int MAX_CELL_LENGTH = 32_767;
 
+    /** Runtime variable map ({@code $name} references in WHERE values resolve against this). */
+    private Map<String, String> runtimeVars = Map.of();
+
     /** Pre-computed data for a single response-data sheet. */
     private record SheetPayload(String requestName, String baseSheetName,
                                 List<ColumnSpec> columns, List<ObjectNode> rows) {}
 
     public List<Path> generate(PostmanCollection collection, List<ExecutionResult> results,
                                RuntimeConfig config, RequestExecutor executor) throws IOException {
+        this.runtimeVars = effectiveVars(config);
         Path outputPath = config.outputPath();
         if (outputPath.getParent() != null) {
             Files.createDirectories(outputPath.getParent());
@@ -102,6 +106,10 @@ public final class ExcelReportGenerator {
                 Set<String> partSheetNames = new HashSet<>();
 
                 if (partIndex == 0) {
+                    // Reserve the fixed sheet names so folder/response sheets never collide with them.
+                    partSheetNames.add("Summary");
+                    partSheetNames.add("Index");
+                    partSheetNames.add("Results");
                     if (config.filterSpec() != null && config.filterSpec().summary() != null) {
                         createCustomSummarySheet(workbook, styleFactory, collection, results,
                                 config.filterSpec(), config, executor);
@@ -109,7 +117,7 @@ public final class ExcelReportGenerator {
                         createSummarySheet(workbook, styleFactory, collection, results);
                     }
                     createResultsSheet(workbook, styleFactory, results, config.includeResponseBody());
-                    createFolderSheets(workbook, styleFactory, results, config.includeResponseBody());
+                    createFolderSheets(workbook, styleFactory, results, config.includeResponseBody(), partSheetNames);
                 }
 
                 for (SheetPayload payload : partPayloads) {
@@ -304,9 +312,10 @@ public final class ExcelReportGenerator {
         Map<String, List<ObjectNode>> rowsByRequest = buildRowsByRequest(results, mapper);
 
         Map<String, SummaryTablePayload> resolvedTables = new LinkedHashMap<>();
-        for (SummaryQuerySpec query : summary.queries().values()) {
-            resolvedTables.put(query.variableName(),
-                    resolveSummaryQuery(query, rowsByRequest, filterSpec, collection, config, executor, mapper));
+        Set<String> resolving = new HashSet<>();
+        for (String name : summary.queries().keySet()) {
+            resolveSummaryVar(name, summary.queries(), resolvedTables, resolving,
+                    rowsByRequest, filterSpec, collection, config, executor, mapper);
         }
 
         for (SummaryItem item : summary.items()) {
@@ -367,10 +376,12 @@ public final class ExcelReportGenerator {
                 continue;
             }
             if (item instanceof SummaryItem.Metrics) {
+                rowCursor = blockSpacer(sheet, rowCursor);
                 rowCursor = writeExecutionMetricsBlock(sheet, rowCursor, styles, collection, results);
                 continue;
             }
             if (item instanceof SummaryItem.Table table) {
+                rowCursor = blockSpacer(sheet, rowCursor);
                 SummaryTablePayload payload = resolvedTables.get(table.variableName());
                 if (payload == null || payload.columns().isEmpty()) {
                     rowCursor = writeSummaryKeyValue(sheet, rowCursor, tableTitleLabel(table),
@@ -388,10 +399,13 @@ public final class ExcelReportGenerator {
                 continue;
             }
             if (item instanceof SummaryItem.QuickTable qt) {
+                rowCursor = blockSpacer(sheet, rowCursor);
                 rowCursor = writeQuickTable(sheet, rowCursor, qt.title(), qt.headers(), qt.rows(),
                         resolvedTables, filterSpec, styles, workbook);
+                continue;
             }
             if (item instanceof SummaryItem.Status statusItem) {
+                rowCursor = blockSpacer(sheet, rowCursor);
                 rowCursor = writeRequestStatusBlock(sheet, rowCursor, styles, results, statusItem.colorName(), workbook);
             }
         }
@@ -415,17 +429,35 @@ public final class ExcelReportGenerator {
                 maxCol = Math.max(maxCol, 4); // 5 columns for STATUS block
             }
         }
-        sheet.setColumnWidth(0, 14_000);
-        sheet.setColumnWidth(1, 18_000);
-        for (int c = 2; c <= maxCol; c++) {
-            sheet.setColumnWidth(c, 14_000);
+        // Always size the label (A) and value (B) columns; size extra table columns when present.
+        for (int c = 0; c <= Math.max(1, maxCol); c++) {
+            sheet.autoSizeColumn(c);
+            int width = sheet.getColumnWidth(c);
+            // Clamp to a readable range so short labels aren't cramped and long text isn't huge.
+            sheet.setColumnWidth(c, Math.max(4_500, Math.min(width + 1_200, 22_000)));
         }
+    }
+
+    /**
+     * Inserts a single (physical) blank row before a section block for visual separation.
+     * No-op at the very top of the sheet. The blank row is materialized so the sheet has no
+     * gaps in its row indices.
+     */
+    private int blockSpacer(Sheet sheet, int rowCursor) {
+        if (rowCursor == 0) {
+            return 0;
+        }
+        sheet.createRow(rowCursor);
+        return rowCursor + 1;
     }
 
     private record SummarySheetStyles(
             CellStyle labelStyle,
             CellStyle autoLabelStyle,
             CellStyle valueStyle,
+            CellStyle numericStyle,
+            CellStyle zebraValueStyle,
+            CellStyle zebraNumericStyle,
             CellStyle trueStyle,
             CellStyle falseStyle,
             CellStyle sectionStyle,
@@ -435,7 +467,10 @@ public final class ExcelReportGenerator {
             this(
                     factory.createSummaryLabelStyle(workbook),
                     factory.createSummaryAutoLabelStyle(workbook),
-                    factory.createTextStyle(workbook, false),
+                    factory.createSummaryValueStyle(workbook),
+                    factory.createSummaryNumericStyle(workbook),
+                    factory.createSummaryZebraStyle(workbook, false),
+                    factory.createSummaryZebraStyle(workbook, true),
                     factory.createBooleanTrueStyle(workbook),
                     factory.createBooleanFalseStyle(workbook),
                     factory.createSummarySectionStyle(workbook),
@@ -444,11 +479,34 @@ public final class ExcelReportGenerator {
         }
 
         CellStyle valueStyleFor(String value) {
+            return valueStyleFor(value, false);
+        }
+
+        /** Picks the cell style for a value: boolean coloring wins, then numeric right-align,
+         *  with an alternate ("zebra") fill on odd table rows. */
+        CellStyle valueStyleFor(String value, boolean zebra) {
             Boolean b = parseBooleanValue(value);
-            if (b == null) {
-                return valueStyle;
+            if (b != null) {
+                return b ? trueStyle : falseStyle;
             }
-            return b ? trueStyle : falseStyle;
+            boolean numeric = isNumericValue(value);
+            if (zebra) {
+                return numeric ? zebraNumericStyle : zebraValueStyle;
+            }
+            return numeric ? numericStyle : valueStyle;
+        }
+    }
+
+    /** True when {@code value} parses as a number (used to right-align summary cells). */
+    private static boolean isNumericValue(String value) {
+        if (value == null || value.isBlank()) {
+            return false;
+        }
+        try {
+            Double.parseDouble(value.trim());
+            return true;
+        } catch (NumberFormatException e) {
+            return false;
         }
     }
 
@@ -475,6 +533,54 @@ public final class ExcelReportGenerator {
         return rowsByRequest;
     }
 
+    /**
+     * Resolves a summary {@code $variable} to its rows, resolving dependencies on demand and
+     * memoizing into {@code cache}. {@code resolving} tracks the in-progress chain to detect cycles.
+     */
+    private SummaryTablePayload resolveSummaryVar(String name,
+                                                  Map<String, SummaryQuerySpec> specs,
+                                                  Map<String, SummaryTablePayload> cache,
+                                                  Set<String> resolving,
+                                                  Map<String, List<ObjectNode>> rowsByRequest,
+                                                  FilterSpec filterSpec,
+                                                  PostmanCollection collection,
+                                                  RuntimeConfig config,
+                                                  RequestExecutor executor,
+                                                  ObjectMapper mapper) {
+        if (cache.containsKey(name)) {
+            return cache.get(name);
+        }
+        SummaryQuerySpec spec = specs.get(name);
+        if (spec == null) {
+            SummaryTablePayload empty = new SummaryTablePayload(List.of(), List.of(), false);
+            cache.put(name, empty);
+            return empty;
+        }
+        if (!resolving.add(name)) {
+            throw new IllegalArgumentException("Summary variable $" + name + " has a circular definition.");
+        }
+
+        SummaryTablePayload payload;
+        if (spec.source() instanceof SummaryQuerySource.DerivedFilter derived) {
+            SummaryTablePayload base = resolveSummaryVar(derived.sourceVariable(), specs, cache, resolving,
+                    rowsByRequest, filterSpec, collection, config, executor, mapper);
+            List<ObjectNode> rows = base.rows();
+            if (derived.filter() != null) {
+                Instant now = Instant.now();
+                rows = rows.stream()
+                        .filter(row -> RowConditionEvaluator.evaluate(row, derived.filter(), Collections.emptyMap(), now, runtimeVars))
+                        .collect(Collectors.toList());
+            }
+            payload = new SummaryTablePayload(base.columns(), rows, base.flatHeaders());
+        } else {
+            payload = resolveSummaryQuery(spec, rowsByRequest, filterSpec, collection, config, executor, mapper);
+        }
+
+        resolving.remove(name);
+        cache.put(name, payload);
+        return payload;
+    }
+
     private SummaryTablePayload resolveSummaryQuery(SummaryQuerySpec query,
                                                     Map<String, List<ObjectNode>> rowsByRequest,
                                                     FilterSpec filterSpec,
@@ -488,8 +594,24 @@ public final class ExcelReportGenerator {
         } else if (query.source() instanceof SummaryQuerySource.NamedTable named) {
             return resolveSummaryNamedTable(
                     named, filterSpec, rowsByRequest, collection, config, executor, mapper);
+        } else if (query.source() instanceof SummaryQuerySource.UnionRows union) {
+            return payloadFromRows(buildUnionRows(union.spec(), rowsByRequest, filterSpec));
+        } else if (query.source() instanceof SummaryQuerySource.SetOpRows setOp) {
+            return payloadFromRows(buildSetOpRows(setOp.spec(), rowsByRequest, filterSpec));
+        } else if (query.source() instanceof SummaryQuerySource.CompareRows compare) {
+            return payloadFromRows(buildCompareRows(compare.spec(), rowsByRequest, filterSpec, mapper));
         }
         throw new IllegalArgumentException("Unknown summary query source: " + query.source());
+    }
+
+    /** Wraps a row list into a summary payload, deriving flat column specs from the row keys. */
+    private SummaryTablePayload payloadFromRows(List<ObjectNode> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return new SummaryTablePayload(List.of(), List.of(), true);
+        }
+        LinkedHashSet<String> keys = new LinkedHashSet<>();
+        rows.forEach(r -> r.fieldNames().forEachRemaining(keys::add));
+        return new SummaryTablePayload(ColumnSpec.project(keys, null), rows, true);
     }
 
     private SummaryTablePayload resolveSummaryFilterRows(SummaryQuerySource.FilterRows query,
@@ -571,7 +693,7 @@ public final class ExcelReportGenerator {
                     : Collections.emptyMap());
             Instant now = Instant.now();
             tableRows = tableRows.stream()
-                    .filter(row -> RowConditionEvaluator.evaluate(row, tableSpec.where(), dateFields, now))
+                    .filter(row -> RowConditionEvaluator.evaluate(row, tableSpec.where(), dateFields, now, runtimeVars))
                     .collect(Collectors.toList());
         }
         return applyDataShape(tableRows, tableSpec.name(), filterSpec);
@@ -579,6 +701,7 @@ public final class ExcelReportGenerator {
 
     private int writeSummaryBanner(Sheet sheet, int rowIndex, CellStyle style, String text) {
         Row row = sheet.createRow(rowIndex);
+        row.setHeightInPoints(20);
         Cell cell = row.createCell(0);
         cell.setCellValue(text);
         cell.setCellStyle(style);
@@ -630,11 +753,13 @@ public final class ExcelReportGenerator {
         } else {
             rowIndex += writeHierarchicalHeaders(sheet, columns, headerStart, styles.tableHeaderStyle());
         }
+        int dataRow = 0;
         for (ObjectNode rowNode : rows) {
+            boolean zebra = (dataRow++ % 2) == 1;
             Row row = sheet.createRow(rowIndex++);
             for (int i = 0; i < columns.size(); i++) {
                 String raw = jsonNodeToString(rowNode.get(columns.get(i).field()));
-                setCell(row, i, raw, styles.valueStyleFor(raw));
+                setCell(row, i, raw, styles.valueStyleFor(raw, zebra));
             }
         }
         return rowIndex + 1;
@@ -656,7 +781,9 @@ public final class ExcelReportGenerator {
                 cell.setCellStyle(styles.tableHeaderStyle());
             }
         }
+        int dataRow = 0;
         for (InlineTableRow r : rows) {
+            boolean zebra = (dataRow++ % 2) == 1;
             Row row = sheet.createRow(rowIndex++);
             List<List<SummaryTextPart>> effectiveCols = r.effectiveColumns();
             for (int col = 0; col < colCount; col++) {
@@ -668,7 +795,7 @@ public final class ExcelReportGenerator {
                 if (col == 0 && r.columns() == null) {
                     cell.setCellStyle(styles.autoLabelStyle());
                 } else {
-                    cell.setCellStyle(styles.valueStyleFor(value));
+                    cell.setCellStyle(styles.valueStyleFor(value, zebra));
                 }
             }
         }
@@ -748,7 +875,7 @@ public final class ExcelReportGenerator {
         Map<String, DateFieldConfig> dateFields = resolveDateConfig(requestName, filterSpec);
         Instant now = Instant.now();
         return rows.stream()
-                .filter(row -> RowConditionEvaluator.evaluate(row, group, dateFields, now))
+                .filter(row -> RowConditionEvaluator.evaluate(row, group, dateFields, now, runtimeVars))
                 .collect(Collectors.toList());
     }
 
@@ -777,10 +904,34 @@ public final class ExcelReportGenerator {
     private String resolveSummaryIfElse(SummaryTextPart.IfElse ifElse,
                                         Map<String, SummaryTablePayload> tables,
                                         FilterSpec filterSpec) {
-        String resolvedValue = resolveSummaryScalar(ifElse.variableName(), tables, filterSpec);
-        boolean conditionMet = evaluateSummaryCondition(resolvedValue, ifElse.op(), ifElse.value());
+        boolean conditionMet;
+        if (ifElse.condition() != null) {
+            conditionMet = evaluateSummaryConditionTree(ifElse.condition(), tables, filterSpec);
+        } else {
+            String resolvedValue = resolveSummaryScalar(ifElse.variableName(), tables, filterSpec);
+            conditionMet = evaluateSummaryCondition(resolvedValue, ifElse.op(), ifElse.value());
+        }
         List<SummaryTextPart> branch = conditionMet ? ifElse.thenParts() : ifElse.elseParts();
         return renderSummaryValue(branch != null ? branch : List.of(), tables, filterSpec);
+    }
+
+    /** Evaluates a (possibly compound) summary IF condition tree. */
+    private boolean evaluateSummaryConditionTree(SummaryTextPart.Condition cond,
+                                                 Map<String, SummaryTablePayload> tables,
+                                                 FilterSpec filterSpec) {
+        if (cond instanceof SummaryTextPart.Condition.Term term) {
+            String resolved = resolveSummaryScalar(term.variableName(), tables, filterSpec);
+            return evaluateSummaryCondition(resolved, term.op(), term.value());
+        }
+        if (cond instanceof SummaryTextPart.Condition.And and) {
+            return evaluateSummaryConditionTree(and.left(), tables, filterSpec)
+                    && evaluateSummaryConditionTree(and.right(), tables, filterSpec);
+        }
+        if (cond instanceof SummaryTextPart.Condition.Or or) {
+            return evaluateSummaryConditionTree(or.left(), tables, filterSpec)
+                    || evaluateSummaryConditionTree(or.right(), tables, filterSpec);
+        }
+        return false;
     }
 
     /**
@@ -1125,13 +1276,15 @@ public final class ExcelReportGenerator {
         autoSize(sheet, headers.length);
     }
 
-    private void createFolderSheets(Workbook workbook, SheetStyleFactory styleFactory, List<ExecutionResult> results, boolean includeBody) {
+    private void createFolderSheets(Workbook workbook, SheetStyleFactory styleFactory, List<ExecutionResult> results,
+                                    boolean includeBody, Set<String> usedNames) {
         Map<String, List<ExecutionResult>> grouped = results.stream()
                 .filter(result -> result.folderPath() != null && !result.folderPath().isBlank())
                 .collect(Collectors.groupingBy(ExecutionResult::folderPath, LinkedHashMap::new, Collectors.toList()));
 
         for (Map.Entry<String, List<ExecutionResult>> entry : grouped.entrySet()) {
-            String sheetName = safeSheetName(entry.getKey());
+            String sheetName = uniqueSheetName(safeSheetName(entry.getKey()), usedNames);
+            usedNames.add(sheetName);
             Sheet sheet = workbook.createSheet(sheetName);
             CellStyle titleStyle = styleFactory.createTitleStyle(workbook, IndexedColors.BROWN);
             CellStyle headerStyle = styleFactory.createHeaderStyle(workbook, IndexedColors.GOLD);
@@ -1344,8 +1497,20 @@ public final class ExcelReportGenerator {
         Map<String, DateFieldConfig> dateFields = resolveDateConfig(requestName, filterSpec);
         Instant now = Instant.now();
         return rows.stream()
-                .filter(row -> RowConditionEvaluator.evaluate(row, group, dateFields, now))
+                .filter(row -> RowConditionEvaluator.evaluate(row, group, dateFields, now, runtimeVars))
                 .collect(Collectors.toList());
+    }
+
+    /** Merges the runtime/env variable map with any filter-level vars (filter vars win). */
+    private static Map<String, String> effectiveVars(RuntimeConfig config) {
+        Map<String, String> merged = new LinkedHashMap<>();
+        if (config.variables() != null) {
+            merged.putAll(config.variables());
+        }
+        if (config.filterSpec() != null && config.filterSpec().vars() != null) {
+            merged.putAll(config.filterSpec().vars());
+        }
+        return merged;
     }
 
     /** Merges the wildcard and request-specific date configs, with the specific winning. */
@@ -1377,7 +1542,7 @@ public final class ExcelReportGenerator {
             if (shape.having() != null) {
                 Instant now = Instant.now();
                 shaped = shaped.stream()
-                        .filter(row -> RowConditionEvaluator.evaluate(row, shape.having(), Collections.emptyMap(), now))
+                        .filter(row -> RowConditionEvaluator.evaluate(row, shape.having(), Collections.emptyMap(), now, runtimeVars))
                         .collect(Collectors.toList());
             }
         }
@@ -1625,6 +1790,25 @@ public final class ExcelReportGenerator {
         }
     }
 
+    /** Builds the deduplicated, shaped rows for a UNION (reused by sheets and summary $vars). */
+    private List<ObjectNode> buildUnionRows(UnionSpec union, Map<String, List<ObjectNode>> rowsByRequest,
+                                            FilterSpec filterSpec) {
+        List<ObjectNode> unionRows = new ArrayList<>();
+        for (String source : union.sources()) {
+            List<ObjectNode> sourceRows = new ArrayList<>(rowsByRequest.getOrDefault(source, List.of()));
+            sourceRows = applyRowFilter(sourceRows, source, filterSpec);
+            unionRows.addAll(sourceRows);
+        }
+        if (!union.all()) {
+            Map<String, ObjectNode> unique = new LinkedHashMap<>();
+            for (ObjectNode row : unionRows) {
+                unique.putIfAbsent(row.toString(), row);
+            }
+            unionRows = new ArrayList<>(unique.values());
+        }
+        return applyDataShape(unionRows, union.name(), filterSpec);
+    }
+
     private void createUnionSheets(Workbook workbook, SheetStyleFactory styleFactory,
                                    List<ExecutionResult> results, FilterSpec filterSpec,
                                    Set<String> usedNames) {
@@ -1633,37 +1817,10 @@ public final class ExcelReportGenerator {
         }
 
         ObjectMapper mapper = new ObjectMapper();
-        Map<String, List<ObjectNode>> rowsByRequest = new LinkedHashMap<>();
-        for (ExecutionResult result : results) {
-            String body = result.responseBody();
-            if (body == null || body.isBlank()) continue;
-            try {
-                JsonNode root = mapper.readTree(body);
-                List<ObjectNode> rows = extractResponseRows(root);
-                if (!rows.isEmpty()) {
-                    rowsByRequest.put(result.requestName(), rows);
-                }
-            } catch (Exception ignored) {
-            }
-        }
+        Map<String, List<ObjectNode>> rowsByRequest = buildRowsByRequest(results, mapper);
 
         for (UnionSpec union : filterSpec.unions()) {
-            List<ObjectNode> unionRows = new ArrayList<>();
-            for (String source : union.sources()) {
-                List<ObjectNode> sourceRows = new ArrayList<>(rowsByRequest.getOrDefault(source, List.of()));
-                sourceRows = applyRowFilter(sourceRows, source, filterSpec);
-                unionRows.addAll(sourceRows);
-            }
-
-            if (!union.all()) {
-                Map<String, ObjectNode> unique = new LinkedHashMap<>();
-                for (ObjectNode row : unionRows) {
-                    unique.putIfAbsent(row.toString(), row);
-                }
-                unionRows = new ArrayList<>(unique.values());
-            }
-
-            unionRows = applyDataShape(unionRows, union.name(), filterSpec);
+            List<ObjectNode> unionRows = buildUnionRows(union, rowsByRequest, filterSpec);
             if (unionRows.isEmpty()) {
                 continue;
             }
@@ -1709,6 +1866,80 @@ public final class ExcelReportGenerator {
         }
     }
 
+    /** Builds the provenance-tagged, shaped rows for a set operation (reused by sheets and summary $vars). */
+    private List<ObjectNode> buildSetOpRows(SetOpSpec op, Map<String, List<ObjectNode>> rowsByRequest,
+                                            FilterSpec filterSpec) {
+        String type = op.type().toUpperCase();
+        List<String> sources = op.sources();
+        Map<String, Set<String>> sigsBySource = new LinkedHashMap<>();
+        Map<String, List<ObjectNode>> rowsBySource = new LinkedHashMap<>();
+        for (String source : sources) {
+            List<ObjectNode> sourceRows = new ArrayList<>(rowsByRequest.getOrDefault(source, List.of()));
+            sourceRows = applyRowFilter(sourceRows, source, filterSpec);
+            rowsBySource.put(source, sourceRows);
+            Set<String> sigs = new LinkedHashSet<>();
+            for (ObjectNode row : sourceRows) {
+                sigs.add(row.toString());
+            }
+            sigsBySource.put(source, sigs);
+        }
+
+        List<ObjectNode> outRows = new ArrayList<>();
+        if ("INTERSECT".equals(type)) {
+            String firstSource = sources.get(0);
+            Set<String> filteredSigs = new LinkedHashSet<>(sigsBySource.get(firstSource));
+            for (int i = 1; i < sources.size(); i++) {
+                filteredSigs.retainAll(sigsBySource.get(sources.get(i)));
+            }
+            for (ObjectNode row : rowsBySource.get(firstSource)) {
+                String sig = row.toString();
+                if (!filteredSigs.contains(sig)) continue;
+                ObjectNode out = row.deepCopy();
+                for (String source : sources) {
+                    out.put("_in_" + source, true);
+                }
+                out.put("_source", "ALL");
+                outRows.add(out);
+            }
+        } else if ("EXCEPT".equals(type)) {
+            String firstSource = sources.get(0);
+            Set<String> filteredSigs = new LinkedHashSet<>(sigsBySource.get(firstSource));
+            for (int i = 1; i < sources.size(); i++) {
+                filteredSigs.removeAll(sigsBySource.get(sources.get(i)));
+            }
+            for (ObjectNode row : rowsBySource.get(firstSource)) {
+                String sig = row.toString();
+                if (!filteredSigs.contains(sig)) continue;
+                ObjectNode out = row.deepCopy();
+                for (String source : sources) {
+                    out.put("_in_" + source, sigsBySource.get(source).contains(sig));
+                }
+                out.put("_source", firstSource);
+                outRows.add(out);
+            }
+        } else if ("DIFF".equals(type)) {
+            for (String source : sources) {
+                Set<String> otherSigs = new HashSet<>();
+                for (String other : sources) {
+                    if (!other.equals(source)) {
+                        otherSigs.addAll(sigsBySource.get(other));
+                    }
+                }
+                for (ObjectNode row : rowsBySource.get(source)) {
+                    String sig = row.toString();
+                    if (otherSigs.contains(sig)) continue;
+                    ObjectNode out = row.deepCopy();
+                    for (String s : sources) {
+                        out.put("_in_" + s, sigsBySource.get(s).contains(sig));
+                    }
+                    out.put("_source", source);
+                    outRows.add(out);
+                }
+            }
+        }
+        return applyDataShape(outRows, op.name(), filterSpec);
+    }
+
     private void createSetOpSheets(Workbook workbook, SheetStyleFactory styleFactory,
                                    List<ExecutionResult> results, FilterSpec filterSpec,
                                    Set<String> usedNames) {
@@ -1717,118 +1948,21 @@ public final class ExcelReportGenerator {
         }
 
         ObjectMapper mapper = new ObjectMapper();
-        Map<String, List<ObjectNode>> rowsByRequest = new LinkedHashMap<>();
-        for (ExecutionResult result : results) {
-            String body = result.responseBody();
-            if (body == null || body.isBlank()) continue;
-            try {
-                JsonNode root = mapper.readTree(body);
-                List<ObjectNode> rows = extractResponseRows(root);
-                if (!rows.isEmpty()) {
-                    rowsByRequest.put(result.requestName(), rows);
-                }
-            } catch (Exception ignored) {
-            }
-        }
+        Map<String, List<ObjectNode>> rowsByRequest = buildRowsByRequest(results, mapper);
 
         for (SetOpSpec op : filterSpec.setOps()) {
             String type = op.type().toUpperCase();
-
-            // Build per-source row sets keyed by toString() signature
             List<String> sources = op.sources();
-            Map<String, Set<String>> sigsBySource = new LinkedHashMap<>();
-            Map<String, List<ObjectNode>> rowsBySource = new LinkedHashMap<>();
 
-            for (String source : sources) {
-                List<ObjectNode> sourceRows = new ArrayList<>(rowsByRequest.getOrDefault(source, List.of()));
-                sourceRows = applyRowFilter(sourceRows, source, filterSpec);
-                rowsBySource.put(source, sourceRows);
-                Set<String> sigs = new LinkedHashSet<>();
-                for (ObjectNode row : sourceRows) {
-                    sigs.add(row.toString());
-                }
-                sigsBySource.put(source, sigs);
-            }
-
-            // For DIFF, collect unique rows per source; for others, compute normally.
-            // outRows list holds all final rows (with provenance columns).
-            List<ObjectNode> outRows = new ArrayList<>();
-            // For DIFF, we also track which rows belong to which source group for section labels.
-            Map<String, List<ObjectNode>> groupRows = new LinkedHashMap<>();
-
-            if ("INTERSECT".equals(type)) {
-                String firstSource = sources.get(0);
-                Set<String> filteredSigs = new LinkedHashSet<>(sigsBySource.get(firstSource));
-                for (int i = 1; i < sources.size(); i++) {
-                    filteredSigs.retainAll(sigsBySource.get(sources.get(i)));
-                }
-                for (ObjectNode row : rowsBySource.get(firstSource)) {
-                    String sig = row.toString();
-                    if (!filteredSigs.contains(sig)) continue;
-                    ObjectNode out = row.deepCopy();
-                    for (String source : sources) {
-                        out.put("_in_" + source, true);
-                    }
-                    out.put("_source", "ALL");
-                    outRows.add(out);
-                }
-            } else if ("EXCEPT".equals(type)) {
-                String firstSource = sources.get(0);
-                Set<String> filteredSigs = new LinkedHashSet<>(sigsBySource.get(firstSource));
-                for (int i = 1; i < sources.size(); i++) {
-                    filteredSigs.removeAll(sigsBySource.get(sources.get(i)));
-                }
-                for (ObjectNode row : rowsBySource.get(firstSource)) {
-                    String sig = row.toString();
-                    if (!filteredSigs.contains(sig)) continue;
-                    ObjectNode out = row.deepCopy();
-                    for (String source : sources) {
-                        out.put("_in_" + source, sigsBySource.get(source).contains(sig));
-                    }
-                    out.put("_source", firstSource);
-                    outRows.add(out);
-                }
-            } else if ("DIFF".equals(type)) {
-                // Compute union of all sigs across all sources
-                Set<String> allSigs = new LinkedHashSet<>();
-                for (String source : sources) {
-                    allSigs.addAll(sigsBySource.get(source));
-                }
-                // For each source, find rows unique to that source
-                for (String source : sources) {
-                    Set<String> otherSigs = new HashSet<>();
-                    for (String other : sources) {
-                        if (!other.equals(source)) {
-                            otherSigs.addAll(sigsBySource.get(other));
-                        }
-                    }
-                    List<ObjectNode> uniqueRows = new ArrayList<>();
-                    for (ObjectNode row : rowsBySource.get(source)) {
-                        String sig = row.toString();
-                        if (otherSigs.contains(sig)) continue;
-                        ObjectNode out = row.deepCopy();
-                        for (String s : sources) {
-                            out.put("_in_" + s, sigsBySource.get(s).contains(sig));
-                        }
-                        out.put("_source", source);
-                        uniqueRows.add(out);
-                    }
-                    if (!uniqueRows.isEmpty()) {
-                        groupRows.put(source, uniqueRows);
-                        outRows.addAll(uniqueRows);
-                    }
-                }
-            }
-
+            List<ObjectNode> outRows = buildSetOpRows(op, rowsByRequest, filterSpec);
             if (outRows.isEmpty()) {
                 System.out.printf("[INFO] Set operation \"%s\" produced 0 rows — sheet skipped.%n", op.name());
                 continue;
             }
 
-            outRows = applyDataShape(outRows, op.name(), filterSpec);
-            if ("DIFF".equals(type) && !outRows.isEmpty()) {
-                // Re-group after shape since shape may reorder/limit rows
-                groupRows.clear();
+            // For DIFF, group rows by source for section labels (post-shape order).
+            Map<String, List<ObjectNode>> groupRows = new LinkedHashMap<>();
+            if ("DIFF".equals(type)) {
                 for (ObjectNode row : outRows) {
                     String src = row.has("_source") ? row.get("_source").asText() : sources.get(0);
                     groupRows.computeIfAbsent(src, k -> new ArrayList<>()).add(row);
@@ -1909,6 +2043,50 @@ public final class ExcelReportGenerator {
         }
     }
 
+    /** Builds the value-matrix rows for a COMPARE (reused by sheets and summary $vars). */
+    private List<ObjectNode> buildCompareRows(CompareSpec cmp, Map<String, List<ObjectNode>> rowsByRequest,
+                                              FilterSpec filterSpec, ObjectMapper mapper) {
+        String field = cmp.field();
+        List<String> sources = cmp.sources();
+
+        Map<String, Set<String>> valueToSources = new LinkedHashMap<>();
+        Instant compareNow = Instant.now();
+        for (String source : sources) {
+            List<ObjectNode> sourceRows = rowsByRequest.getOrDefault(source, List.of());
+            for (ObjectNode row : sourceRows) {
+                if (cmp.where() != null) {
+                    Map<String, DateFieldConfig> dateFields = resolveDateConfig(source, filterSpec);
+                    if (!RowConditionEvaluator.evaluate(row, cmp.where(), dateFields, compareNow, runtimeVars)) {
+                        continue;
+                    }
+                }
+                JsonNode val = row.get(field);
+                if (val != null && !val.isNull()) {
+                    valueToSources.computeIfAbsent(val.asText(), k -> new LinkedHashSet<>()).add(source);
+                }
+            }
+        }
+
+        List<ObjectNode> outRows = new ArrayList<>();
+        List<String> sortedValues = new ArrayList<>(valueToSources.keySet());
+        Collections.sort(sortedValues);
+        for (String value : sortedValues) {
+            Set<String> present = valueToSources.get(value);
+            ObjectNode row = mapper.createObjectNode();
+            row.put(field, value);
+            for (String source : sources) {
+                row.put("_in_" + source, present.contains(source));
+            }
+            row.put("_count", present.size());
+            outRows.add(row);
+        }
+
+        if (cmp.having() != null) {
+            outRows.removeIf(row -> !RowConditionEvaluator.evaluate(row, cmp.having(), Collections.emptyMap(), compareNow, runtimeVars));
+        }
+        return applyDataShape(outRows, cmp.name(), filterSpec);
+    }
+
     private void createCompareSheets(Workbook workbook, SheetStyleFactory styleFactory,
                                      List<ExecutionResult> results, FilterSpec filterSpec,
                                      Set<String> usedNames) {
@@ -1917,66 +2095,16 @@ public final class ExcelReportGenerator {
         }
 
         ObjectMapper mapper = new ObjectMapper();
-        Map<String, List<ObjectNode>> rowsByRequest = new LinkedHashMap<>();
-        for (ExecutionResult result : results) {
-            String body = result.responseBody();
-            if (body == null || body.isBlank()) continue;
-            try {
-                JsonNode root = mapper.readTree(body);
-                List<ObjectNode> rows = extractResponseRows(root);
-                if (!rows.isEmpty()) {
-                    rowsByRequest.put(result.requestName(), rows);
-                }
-            } catch (Exception ignored) {
-            }
-        }
+        Map<String, List<ObjectNode>> rowsByRequest = buildRowsByRequest(results, mapper);
 
         for (CompareSpec cmp : filterSpec.compares()) {
             String field = cmp.field();
             List<String> sources = cmp.sources();
 
-            // Build value -> set of sources containing it
-            Map<String, Set<String>> valueToSources = new LinkedHashMap<>();
-            Instant compareNow = Instant.now();
-            for (String source : sources) {
-                List<ObjectNode> sourceRows = rowsByRequest.getOrDefault(source, List.of());
-                for (ObjectNode row : sourceRows) {
-                    if (cmp.where() != null) {
-                        Map<String, DateFieldConfig> dateFields = resolveDateConfig(source, filterSpec);
-                        if (!RowConditionEvaluator.evaluate(row, cmp.where(), dateFields, compareNow)) {
-                            continue;
-                        }
-                    }
-                    JsonNode val = row.get(field);
-                    if (val != null && !val.isNull()) {
-                        valueToSources.computeIfAbsent(val.asText(), k -> new LinkedHashSet<>()).add(source);
-                    }
-                }
-            }
-
-            if (valueToSources.isEmpty()) {
+            List<ObjectNode> outRows = buildCompareRows(cmp, rowsByRequest, filterSpec, mapper);
+            if (outRows.isEmpty()) {
                 System.out.printf("[INFO] Compare \"%s\" on field \"%s\" produced no values — sheet skipped.%n", cmp.name(), field);
                 continue;
-            }
-
-            // Build output rows
-            List<ObjectNode> outRows = new ArrayList<>();
-            List<String> sortedValues = new ArrayList<>(valueToSources.keySet());
-            Collections.sort(sortedValues);
-
-            for (String value : sortedValues) {
-                Set<String> present = valueToSources.get(value);
-                ObjectNode row = mapper.createObjectNode();
-                row.put(field, value);
-                for (String source : sources) {
-                    row.put("_in_" + source, present.contains(source));
-                }
-                row.put("_count", present.size());
-                outRows.add(row);
-            }
-
-            if (cmp.having() != null) {
-                outRows.removeIf(row -> !RowConditionEvaluator.evaluate(row, cmp.having(), Collections.emptyMap(), compareNow));
             }
 
             // Column specs: field, then _in_<source> for each, then _count
