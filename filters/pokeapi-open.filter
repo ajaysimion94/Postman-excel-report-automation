@@ -1,0 +1,24 @@
+# Verified public report sample. The report uses only small, read-only requests.
+COLLECTION pokeapi-open;
+REQUESTS "List Pokémon", "List Pokémon types";
+OUTPUT_PREFIX pokeapi-report;
+
+COLUMNS "List Pokémon": name AS "Pokémon", url AS "API URL";
+COLUMNS "List Pokémon types": name AS "Type", url AS "API URL";
+
+$POKEMON = FILTER "List Pokémon" WHERE name IS NOT NULL;
+$TYPES = FILTER "List Pokémon types" WHERE name IS NOT NULL;
+
+SUMMARY {
+  TITLE "PokéAPI reference report" COLOR "#3F6655";
+  DESCRIPTION "A verified live reference list generated from the public PokéAPI.";
+  METRIC "Pokémon listed" = $POKEMON;
+  METRIC "Types listed" = $TYPES;
+  PARAGRAPH $POKEMON + " Pokémon and " + $TYPES + " types were returned by the open API.";
+  TABLE $POKEMON TITLE "Pokémon"
+    COLUMNS name AS "Name", url AS "API URL";
+  TABLE $TYPES TITLE "Types"
+    COLUMNS name AS "Type", url AS "API URL";
+  STATUS COLOR "#3F6655";
+  METRICS;
+}

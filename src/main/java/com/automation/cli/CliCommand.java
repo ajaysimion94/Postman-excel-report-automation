@@ -168,6 +168,8 @@ public final class CliCommand {
 
     private static void printUsage() {
         System.out.println("Usage: java -jar app.jar");
+        System.out.println("  --web [--port 8080]       Open the local Report Studio web workspace");
+        System.out.println("    --workspace <path>      Workspace containing collections/, filters/, reports/");
         System.out.println("  --collection <path>       Absolute path to a Postman collection JSON file");
         System.out.println("  --collection-name <name>  Collection filename to load from COLLECTIONS_DIR in .env");
         System.out.println("  --list                    List all .json collections in COLLECTIONS_DIR");

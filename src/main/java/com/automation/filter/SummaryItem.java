@@ -4,7 +4,7 @@ import java.util.List;
 
 /** One rendered block on the customizable Summary sheet. */
 public sealed interface SummaryItem permits SummaryItem.Title, SummaryItem.Description,
-        SummaryItem.Text, SummaryItem.KeyValue, SummaryItem.LabelValue,
+        SummaryItem.Text, SummaryItem.Paragraph, SummaryItem.KeyValue, SummaryItem.LabelValue,
         SummaryItem.Table, SummaryItem.QuickTable, SummaryItem.Metrics, SummaryItem.Status {
     record Title(String text, String colorName) implements SummaryItem {
     }
@@ -14,6 +14,10 @@ public sealed interface SummaryItem permits SummaryItem.Title, SummaryItem.Descr
 
     /** Free-form text on one line (use {@link KeyValue} or {@code KV} for label/value rows). */
     record Text(List<SummaryTextPart> parts) implements SummaryItem {
+    }
+
+    /** A complete sentence or paragraph; variable references never turn it into a label/value row. */
+    record Paragraph(List<SummaryTextPart> parts) implements SummaryItem {
     }
 
     /** Label in column A and value in column B — no header row, bold+grey label. */

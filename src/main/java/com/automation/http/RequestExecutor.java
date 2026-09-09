@@ -138,6 +138,11 @@ public final class RequestExecutor {
     }
 
     public List<ExecutionResult> execute(PostmanCollection collection, RuntimeConfig config) {
+        return execute(collection, config, result -> {});
+    }
+
+    public List<ExecutionResult> execute(PostmanCollection collection, RuntimeConfig config,
+                                         java.util.function.Consumer<ExecutionResult> onResult) {
         List<ExecutionResult> results = new ArrayList<>();
         Map<String, String> variables = new LinkedHashMap<>(collection.variables());
         variables.putAll(config.variables());
@@ -146,13 +151,15 @@ public final class RequestExecutor {
         int maxResponseBytes = parseMbVar(config.variables(), "MAX_RESPONSE_MB", DEFAULT_MAX_RESPONSE_BYTES);
 
         for (RequestSpec request : collection.requests()) {
-            results.add(executeRequest(request, variables, config.includeResponseBody(), timeoutSeconds, maxResponseBytes));
+            ExecutionResult result = executeRequest(request, variables, config.includeResponseBody(), timeoutSeconds, maxResponseBytes);
+            results.add(result);
+            onResult.accept(result);
         }
         return List.copyOf(results);
     }
 
     private ExecutionResult executeRequest(RequestSpec request, Map<String, String> variables, boolean includeResponseBody, int timeoutSeconds, int maxResponseBytes) {
-        String resolvedUrl = appendApiKeyQueryParam(VariableResolver.resolve(request.url(), variables), variables);
+        String resolvedUrl = appendApiKeyQueryParam(VariableResolver.resolve(request.url(), variables), request.auth(), variables);
         String resolvedBody = VariableResolver.resolve(request.body(), variables);
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(resolvedUrl));
 
@@ -237,24 +244,28 @@ public final class RequestExecutor {
                 String keyName  = resolveAuthValue(auth, variables, "key",   "APIKEY_HEADER", "X-API-Key");
                 String keyValue = resolveAuthValue(auth, variables, "value", "API_KEY",        "APIKEY");
                 String location = auth.values().getOrDefault("in", "header");
-                if ("query".equalsIgnoreCase(location)) {
-                    variables.put("__apikey_param_name__",  keyName);
-                    variables.put("__apikey_param_value__", keyValue);
-                } else {
+                if (!"query".equalsIgnoreCase(location)) {
                     builder.header(keyName, keyValue);
                 }
             }
         }
     }
 
-    private String appendApiKeyQueryParam(String url, Map<String, String> variables) {
-        String paramName  = variables.remove("__apikey_param_name__");
-        String paramValue = variables.remove("__apikey_param_value__");
+    private String appendApiKeyQueryParam(String url, AuthDefinition auth, Map<String, String> variables) {
+        if (auth == null || !"apikey".equalsIgnoreCase(auth.type())
+                || !"query".equalsIgnoreCase(auth.values().getOrDefault("in", "header"))) {
+            return url;
+        }
+        String paramName = resolveAuthValue(auth, variables, "key", "APIKEY_HEADER", "X-API-Key");
+        String paramValue = resolveAuthValue(auth, variables, "value", "API_KEY", "APIKEY");
         if (paramName == null || paramName.isBlank()) {
             return url;
         }
         String separator = url.contains("?") ? "&" : "?";
-        return url + separator + paramName + "=" + paramValue;
+        return url + separator
+                + java.net.URLEncoder.encode(paramName, java.nio.charset.StandardCharsets.UTF_8)
+                + "="
+                + java.net.URLEncoder.encode(paramValue, java.nio.charset.StandardCharsets.UTF_8);
     }
 
     private String resolveAuthValue(AuthDefinition auth, Map<String, String> variables, String authKey, String... fallbackKeys) {

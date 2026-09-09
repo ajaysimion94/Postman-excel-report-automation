@@ -16,8 +16,19 @@ public final class PostmanCollectionParser {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public PostmanCollection parse(Path collectionPath) throws IOException {
-        JsonNode root = objectMapper.readTree(collectionPath.toFile());
-        String name = root.path("info").path("name").asText(collectionPath.getFileName().toString());
+        return parseRoot(objectMapper.readTree(collectionPath.toFile()), collectionPath.getFileName().toString());
+    }
+
+    /** Parses an unsaved collection buffer for web validation and execution. */
+    public PostmanCollection parseSource(String source, String filename) throws IOException {
+        return parseRoot(objectMapper.readTree(source), filename);
+    }
+
+    private PostmanCollection parseRoot(JsonNode root, String filename) {
+        if (root == null || !root.isObject() || !root.path("item").isArray()) {
+            throw new IllegalArgumentException("A Postman collection must be a JSON object with an item array.");
+        }
+        String name = root.path("info").path("name").asText(filename);
         Map<String, String> variables = parseVariables(root.path("variable"));
         AuthDefinition collectionAuth = parseAuth(root.path("auth"));
         List<RequestSpec> requests = new ArrayList<>();

@@ -36,11 +36,33 @@ public final class FilterQueryParser {
     }
 
     public static FilterSpec parse(Path filterPath, String preferredCollectionSelector) throws IOException {
-        String raw = Files.readString(filterPath);
+        return parseSource(Files.readString(filterPath), filterPath, preferredCollectionSelector);
+    }
+
+    /** Parses an editor buffer without saving it to disk. Diagnostics retain source locations. */
+    public static FilterSpec parseSource(String raw, Path filterPath, String preferredCollectionSelector) {
         TokenStream ts = new TokenStream(raw, filterPath);
         ParseState state = new ParseState(filterPath);
 
         while (!ts.peekType(TokenType.EOF)) {
+            if (ts.matchKeyword("SUMMARY")) {
+                ts.expectSymbol("{");
+                while (!ts.peekSymbol("}")) {
+                    if (ts.peekType(TokenType.EOF)) {
+                        throw ts.error("Expected '}' to close the SUMMARY block");
+                    }
+                    if (!ts.peekSymbol("$") && !Set.of("TITLE", "DESCRIPTION", "PARAGRAPH", "METRIC",
+                            "FIELD", "TEXT", "KV", "LV", "TABLE", "LABEL_TABLE", "QT", "QUICK_TABLE",
+                            "METRICS", "STATUS").contains(ts.peekText().toUpperCase(java.util.Locale.ROOT))) {
+                        throw ts.error("Only summary statements are allowed inside SUMMARY { ... }");
+                    }
+                    parseStatement(ts, state);
+                    ts.expectSymbol(";");
+                }
+                ts.expectSymbol("}");
+                ts.matchSymbol(";");
+                continue;
+            }
             parseStatement(ts, state);
             ts.expectSymbol(";");
         }
@@ -291,6 +313,25 @@ public final class FilterQueryParser {
 
         if (ts.matchKeyword("TEXT")) {
             b.summaryItems.add(new SummaryItem.Text(parseSummaryTextExpr(ts)));
+            return;
+        }
+
+        if (ts.matchKeyword("PARAGRAPH")) {
+            b.summaryItems.add(new SummaryItem.Paragraph(parseSummaryTextExpr(ts)));
+            return;
+        }
+
+        if (ts.matchKeyword("METRIC")) {
+            String label = ts.readValue();
+            ts.expectSymbol("=");
+            b.summaryItems.add(new SummaryItem.KeyValue(label, parseSummaryTextExpr(ts)));
+            return;
+        }
+
+        if (ts.matchKeyword("FIELD")) {
+            String label = ts.readValue();
+            ts.expectSymbol("=");
+            b.summaryItems.add(new SummaryItem.LabelValue(label, parseSummaryTextExpr(ts)));
             return;
         }
 
@@ -1270,7 +1311,7 @@ public final class FilterQueryParser {
                     col += 2;
                     continue;
                 }
-                if (SYMBOLS.contains(String.valueOf(ch))) {
+                if (ch == '{' || ch == '}' || SYMBOLS.contains(String.valueOf(ch))) {
                     out.add(new Token(TokenType.SYMBOL, String.valueOf(ch), line, startCol));
                     i++;
                     col++;

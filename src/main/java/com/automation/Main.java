@@ -25,6 +25,10 @@ public final class Main {
     }
 
     public static void main(String[] args) throws Exception {
+        if (java.util.Arrays.asList(args).contains("--web")) {
+            com.automation.web.WebServer.launch(args);
+            return;
+        }
         CommandLineOptions options = CliCommand.parse(args);
 
         // --config mode: manage credential profiles, then exit

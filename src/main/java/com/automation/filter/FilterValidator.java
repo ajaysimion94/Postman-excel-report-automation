@@ -546,6 +546,8 @@ public final class FilterValidator {
                     validateSummaryTextParts(lv.valueParts(), definedQueries, "LV");
                 } else if (item instanceof SummaryItem.Text txt) {
                     validateSummaryTextParts(txt.parts(), definedQueries, "TEXT");
+                } else if (item instanceof SummaryItem.Paragraph paragraph) {
+                    validateSummaryTextParts(paragraph.parts(), definedQueries, "PARAGRAPH");
                 } else if (item instanceof SummaryItem.QuickTable qt) {
                     // Validate variable references in both classic and multi-column rows
                     for (SummaryItem.InlineTableRow row : qt.rows()) {

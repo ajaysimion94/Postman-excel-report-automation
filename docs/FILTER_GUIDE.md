@@ -5,27 +5,67 @@ This guide documents the current `.filter` language implemented by the parser, v
 ## Quick Start
 
 ```sql
-COLLECTION jsonplaceholder;
-REQUESTS "List posts", "List users";
+COLLECTION reqres;
+REQUESTS "List users page 1", "Get single user";
 
-FILTER "List posts" WHERE userId = 1;
-COLUMNS "List posts": id, userId, title;
-SHAPE "List posts" ORDER BY id DESC LIMIT 50;
+FILTER "List users page 1" WHERE id > 0;
+COLUMNS "List users page 1": id, first_name, last_name, email;
+SHAPE "List users page 1" ORDER BY id ASC LIMIT 20;
 ```
 
 This will:
 
-1. Select the `jsonplaceholder` collection.
+1. Select the `reqres` collection.
 2. Run only the two named requests.
-3. Keep only rows from `List posts` where `userId = 1`.
-4. Show only `id`, `userId`, and `title` in the `List posts` response-data sheet.
-5. Sort the remaining rows by `id` descending and keep the first 50.
+3. Keep user rows whose `id` is greater than zero.
+4. Show only the selected identity and email fields in the user response-data sheet.
+5. Sort the remaining rows by `id` and keep the first 20.
+
+## Readable summary syntax
+
+Use `SUMMARY { ... }` to keep the report's presentation together. Statements inside
+the block still end with semicolons; the semicolon after `}` is optional.
+Blocks inherit their current `COLLECTION` scope. They may contain summary statements
+and `$variable` definitions, but cannot contain collection selection, request
+selection, or response-shaping statements. Nested summary blocks are not supported.
+
+```sql
+$USERS = FILTER "List users page 1" WHERE id > 0;
+
+SUMMARY {
+  TITLE "User report" COLOR "#245C50";
+  DESCRIPTION "Users returned by the public sample API.";
+  METRIC "Users" = $USERS;
+  FIELD "User filter" = "id > 0";
+  PARAGRAPH IF $USERS = 0 THEN "No users match the selected filter."
+    ELSE IF $USERS = 1 THEN "One user matches the selected filter."
+    ELSE $USERS + " users match the selected filter.";
+  TABLE $USERS TITLE "Users" COLUMNS id, first_name, last_name, email;
+  STATUS;
+  METRICS;
+}
+```
+
+| Statement | Behavior |
+| --- | --- |
+| `METRIC "Label" = expression;` | A bold label and value; equivalent to `KV "Label" expression;` |
+| `FIELD "Label" = expression;` | A secondary label and value; equivalent to `LV "Label" expression;` |
+| `PARAGRAPH expression;` | A complete sentence or paragraph, merged across columns A–B, with wrapping |
+
+Use `PARAGRAPH` for sentences with variables. Legacy `TEXT` can infer a label/value
+layout from variables; `PARAGRAPH` always preserves the whole sentence. Counts are
+not automatically pluralized: use the existing `IF / THEN / ELSE` expressions as
+above. Variables and conditions receive the same validation as other summary items.
+
+These statements also work outside a block. Existing `TITLE`, `TEXT`, `KV`, `LV`,
+`QT`, and all other summary syntax remain supported. See
+[`reqres.filter`](../filters/reqres.filter) for a runnable example.
 
 ## 1. Core Syntax Rules
 
 | Rule | Details |
 | ---- | ------- |
-| Statement terminator | Every statement must end with `;` |
+| Statement terminator | Every statement must end with `;`; the semicolon after a `SUMMARY` block's `}` is optional |
 | Comments | Use `# comment` or `-- comment` |
 | Keyword case | Keywords are case-insensitive |
 | Names and values | Use single or double quotes when a value contains spaces |
@@ -55,7 +95,7 @@ FILTER "List posts" WHERE (status = active OR priority = high) AND NOT archived 
 | Output shaping | `SHAPE`, `DISTINCT`, `ORDER BY`, `ASC`, `DESC`, `LIMIT`, `OFFSET`, `GROUP BY`, `AGG`, `AS`, `HAVING` |
 | Cross-request outputs | `LOOKUP_TABLE`, `FROM`, `LOOKUP`, `BY`, `AS`, `UNION`, `ALL`, `INTERSECT`, `EXCEPT`, `DIFF`, `COMPARE` |
 | Array expansion | `EXPAND`, `ON`, `AS` |
-| Summary sheet layout | `TITLE`, `DESCRIPTION`, `TEXT`, `KV`, `LV`, `TABLE`, `QT`/`QUICK_TABLE`, `LABEL_TABLE`, `METRICS`, `STATUS`, `$var = FILTER\|TABLE\|UNION\|INTERSECT\|EXCEPT\|DIFF\|COMPARE ...`, `$var = FILTER $other ...`, `$var` |
+| Summary sheet layout | `SUMMARY`, `TITLE`, `DESCRIPTION`, `PARAGRAPH`, `METRIC`, `FIELD`, `TEXT`, `KV`, `LV`, `TABLE`, `QT`/`QUICK_TABLE`, `LABEL_TABLE`, `METRICS`, `STATUS`, `$var = FILTER\|TABLE\|UNION\|INTERSECT\|EXCEPT\|DIFF\|COMPARE ...`, `$var = FILTER $other ...`, `$var` |
 
 ## 3. Statement Reference
 
@@ -75,7 +115,7 @@ Purpose:
 Example:
 
 ```sql
-COLLECTION jsonplaceholder;
+COLLECTION my-collection;
 ```
 
 ### `OUTPUT_PREFIX`
@@ -476,7 +516,7 @@ Complete example:
 
 ```sql
 # ── Select collection and requests ──
-COLLECTION jsonplaceholder;
+COLLECTION my-collection;
 REQUESTS "List posts", "List users";
 
 # ── Column projection for response-data sheets ──
@@ -1257,7 +1297,7 @@ KV "Mode" IF $MODE = active THEN "Running" ELSE "Stopped";
 ### Complete summary example
 
 ```sql
-COLLECTION jsonplaceholder;
+COLLECTION my-collection;
 REQUESTS "List posts", "Get post";
 
 LOOKUP_TABLE "Items With Details"
@@ -1303,21 +1343,9 @@ STATUS COLOR "#228B22";
 METRICS;
 ```
 
-See `filters/summary-example.filter` in this repo.
+See `filters/reqres.filter` in this repo.
 
 ## 13. Example Files in This Repo
 
-- `filters/showcase.filter` — variables across queries (`$x = UNION/COMPARE`, `$b = FILTER $a`, `$var` in `WHERE`), compound summary `IF`, and the redesigned Summary
-- `filters/tutorial.filter` — full walkthrough of all core features
-- `filters/frequent-use.filter` — commonly used patterns
-- `filters/multi-collection.filter` — multiple `COLLECTION` blocks
-- `filters/posts-with-details.filter` — `LOOKUP_TABLE` demo
-- `filters/summary-example.filter` — customizable Summary sheet with all item types
-- `filters/summary-features-demo.filter` — comprehensive demo of every Summary feature
-- `filters/ifelse-conditional.filter` — IF/ELSE in WHERE filters and Summary text
-- `filters/status-and-multicol.filter` — STATUS keyword, multi-column QT, hex colors
-- `filters/set-operations.filter` — combined INTERSECT, EXCEPT, DIFF, COMPARE demo
-- `filters/intersect-example.filter` — INTERSECT standalone example
-- `filters/except-example.filter` — EXCEPT standalone example
-- `filters/diff-example.filter` — DIFF standalone example (section labels, symmetric difference)
-- `filters/compare-example.filter` — COMPARE standalone example (value matrix across sources)
+- `filters/pokeapi-open.filter` — list-style payloads, two response sheets, metrics, and summary tables
+- `filters/reqres.filter` — wrapped arrays, nested response objects, projected columns, and a compact user summary

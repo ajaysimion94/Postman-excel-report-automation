@@ -291,9 +291,13 @@ public final class ExcelReportGenerator {
         createTitleRow(sheet, titleStyle, "Execution Summary");
         SummarySheetStyles styles = new SummarySheetStyles(workbook, styleFactory);
         int nextRow = writeExecutionMetricsBlock(sheet, 2, styles, collection, results);
+        writeRequestStatusBlock(sheet, nextRow + 1, styles, results, null, workbook);
+        sheet.setDisplayGridlines(false);
 
-        sheet.autoSizeColumn(0);
-        sheet.autoSizeColumn(1);
+        for (int column = 0; column < 5; column++) {
+            sheet.autoSizeColumn(column);
+            sheet.setColumnWidth(column, Math.max(4_500, Math.min(sheet.getColumnWidth(column) + 1_200, 22_000)));
+        }
         if (nextRow > 2) {
             sheet.createFreezePane(0, 2);
         }
@@ -306,6 +310,9 @@ public final class ExcelReportGenerator {
         SummarySpec summary = filterSpec.summary();
         Sheet sheet = workbook.createSheet("Summary");
         SummarySheetStyles styles = new SummarySheetStyles(workbook, styleFactory);
+        CellStyle paragraphStyle = workbook.createCellStyle();
+        paragraphStyle.cloneStyleFrom(styles.valueStyle());
+        paragraphStyle.setWrapText(true);
         int rowCursor = 0;
 
         ObjectMapper mapper = new ObjectMapper();
@@ -351,6 +358,17 @@ public final class ExcelReportGenerator {
             if (item instanceof SummaryItem.KeyValue kv) {
                 rowCursor = writeSummaryKeyValue(sheet, rowCursor, kv.label(),
                         renderSummaryValue(kv.valueParts(), resolvedTables, filterSpec), styles);
+                continue;
+            }
+            if (item instanceof SummaryItem.Paragraph paragraph) {
+                String value = renderSummaryValue(paragraph.parts(), resolvedTables, filterSpec);
+                Row row = sheet.createRow(rowCursor++);
+                Cell cell = row.createCell(0);
+                cell.setCellValue(value);
+                cell.setCellStyle(paragraphStyle);
+                row.createCell(1).setCellStyle(paragraphStyle);
+                row.setHeightInPoints(Math.min(160, 20 * Math.max(2, (value.length() + 79) / 80)));
+                sheet.addMergedRegion(new CellRangeAddress(rowCursor - 1, rowCursor - 1, 0, 1));
                 continue;
             }
             if (item instanceof SummaryItem.Text text) {
@@ -430,6 +448,8 @@ public final class ExcelReportGenerator {
             }
         }
         // Always size the label (A) and value (B) columns; size extra table columns when present.
+        sheet.setDisplayGridlines(false);
+        sheet.createFreezePane(0, 1);
         for (int c = 0; c <= Math.max(1, maxCol); c++) {
             sheet.autoSizeColumn(c);
             int width = sheet.getColumnWidth(c);

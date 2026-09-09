@@ -2,6 +2,37 @@
 
 This guide is for implementation details, architecture, and testing strategy.
 
+## Web application
+
+`Main --web` starts `com.automation.web.WebServer`, a loopback-only JDK HTTP server.
+The static client lives in `src/main/resources/web` and is packaged into the existing
+executable JAR. No additional production dependencies or frontend build are required.
+
+- `WorkspaceFiles` limits file operations to collections, filters, and reports,
+  rejects symbolic links and traversal, uses content revisions for writes, and
+  moves removed files to recoverable trash.
+- `ReportService` parses editor snapshots, reuses the existing validators,
+  `CredentialLoader`, `RequestExecutor`, and `ExcelReportGenerator`, and runs work on
+  one background worker with a bounded queue. Immutable progress snapshots and run
+  metadata support polling and persistent history.
+- `WorkbookPreview` reads generated `.xlsx` files with POI and returns paginated
+  cell values, styles, widths, heights, and merge ranges. The client escapes cell text
+  and only accepts fixed CSS properties and hex colors when rendering the workbook.
+- The parser accepts source strings without temporary filter files. `SUMMARY` groups
+  presentation statements; `METRIC` and `FIELD` map to existing item types, while
+  `Paragraph` preserves sentence layout instead of applying `TEXT`'s label inference.
+
+Read operations include `/api/session`, `/api/files`, `/api/file`, `/api/collection`,
+`/api/runs`, `/api/run`, `/api/workbook`, and `/api/download`. Mutations use
+`PUT /api/file` or POST to `/api/folder`, `/api/move`, `/api/trash`, `/api/validate`,
+and `/api/runs`. Validate is non-mutating despite using POST for editor contents.
+Every request checks local Host/Origin headers; non-GET requests also require the
+`X-Workspace-Token` from `/api/session`. There is no CORS allowance or remote bind option.
+
+Run the Java suite with `./mvnw test`. Web integration tests use ephemeral workspaces
+and loopback mock HTTP servers. Client rendering and editor behavior tests run with
+`node --test src/test/web/app.test.cjs`; Node is optional for end users.
+
 ## Pipeline Overview
 
 Execution flow:

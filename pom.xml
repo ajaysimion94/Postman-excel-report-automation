@@ -7,7 +7,7 @@
     <artifactId>postman-excel-runner</artifactId>
     <version>1.0.0</version>
     <name>postman-excel-runner</name>
-    <description>Java 17 CLI that executes a Postman collection and exports styled Excel reports.</description>
+    <description>Java 17 CLI and local Report Studio web IDE for Postman collections and styled Excel reports.</description>
 
     <properties>
         <maven.compiler.source>17</maven.compiler.source>

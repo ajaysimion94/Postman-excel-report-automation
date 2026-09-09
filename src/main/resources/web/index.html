@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A local workspace for Postman collections, report definitions, and Excel reports.">
+  <meta name="theme-color" content="#192329">
+  <title>Report Studio · Postman to Excel</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="app-header">
+    <button id="toggle-explorer" class="icon-button mobile-menu" title="Toggle file explorer" aria-label="Toggle file explorer">☰</button>
+    <a class="brand" href="/" aria-label="Report Studio home"><span class="brand-mark" aria-hidden="true">r.</span><span>Report Studio<span class="brand-subtitle">API → EXCEL</span></span></a>
+    <button id="help-button" class="quiet-button">Language guide <span class="key-hint">?</span></button>
+  </header>
+
+  <div class="app-layout">
+    <aside class="explorer" id="explorer" aria-label="Workspace files">
+      <div class="section-heading"><h2>EXPLORER</h2><button id="refresh-files" class="icon-button" title="Refresh files" aria-label="Refresh files">↻</button></div>
+      <div class="file-search"><span aria-hidden="true">⌕</span><input id="file-search" type="search" placeholder="Find a file…" aria-label="Find files"><kbd>⌘ K</kbd></div>
+      <div class="file-tools">
+        <button id="new-file" title="Create a filter or collection">+ New file</button>
+        <button id="new-folder" class="icon-button" title="New folder" aria-label="New folder">▣+</button>
+        <button id="import-file" class="icon-button" title="Import files" aria-label="Import files">↑</button>
+        <button id="manage-file" class="icon-button" title="Manage selected file or folder" aria-label="Manage selected file or folder">•••</button>
+        <input id="file-upload" type="file" accept=".json,.filter" multiple hidden>
+      </div>
+      <nav id="file-tree" class="file-tree" aria-label="Collections, filters, and reports"><p class="muted loading">Loading files…</p></nav>
+    </aside>
+
+    <main class="main-workspace">
+      <div class="document-tabs" id="document-tabs" role="tablist" aria-label="Open files"></div>
+      <div class="editor-toolbar">
+        <div class="run-tools"><button id="run-report" class="primary-button" title="Run report (⌘/Ctrl+Enter)"><span aria-hidden="true">▶</span> Run report</button><button id="validate-report" class="quiet-button" title="Validate (⌘/Ctrl+Shift+Enter)">✓ Validate</button><span class="toolbar-divider"></span><button id="save-file" class="quiet-button" title="Save (⌘/Ctrl+S)">Save <span class="key-hint">⌘ S</span></button></div>
+        <label class="collection-picker"><span>Collection</span><select id="collection-select" aria-label="Collection to execute"><option value="">Select a collection</option></select></label>
+        <button id="toggle-results" class="quiet-button" type="button" aria-controls="results-pane" aria-pressed="false" title="Hide report results">Hide results</button><button id="toggle-reference" class="icon-button" title="Toggle request outline" aria-label="Toggle request outline">☷</button>
+      </div>
+
+      <section class="editor-pane" aria-label="Report definition editor">
+        <div class="code-pane">
+          <div class="editor-breadcrumb"><span id="file-breadcrumb">Workspace / untitled.filter</span><span id="editor-language">REPORT DEFINITION</span></div>
+          <div class="code-surface">
+            <div id="line-numbers" class="line-numbers" aria-hidden="true">1</div>
+            <div class="code-input-wrap">
+              <pre id="syntax-layer" aria-hidden="true"><code id="syntax-code"></code></pre>
+              <textarea id="editor" aria-label="Report definition source" aria-description="Tab indents. Press Escape, then Tab to move focus out of the editor." spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" wrap="off"></textarea>
+            </div>
+          </div>
+          <div class="editor-footer"><span id="document-state">Ready</span><span id="cursor-position">Ln 1, Col 1</span><span>UTF-8</span><span>Spaces: 2</span></div>
+        </div>
+        <aside id="reference-panel" class="reference-panel" aria-label="Collection request outline"><div class="section-heading"><h2>COLLECTION OUTLINE</h2></div><p class="reference-intro">Request names are available to your filter.</p><div id="request-outline"></div><button id="insert-summary" class="outline-button">+ Insert summary block</button></aside>
+      </section>
+      <div class="split-control"><label for="editor-size" title="Adjust editor height">↕</label><input id="editor-size" aria-label="Editor height" type="range" min="22" max="68" value="42"></div>
+
+      <section id="results-pane" class="results-pane" aria-label="Report output">
+        <div class="results-toolbar">
+          <div id="result-tabs" class="result-tabs" role="tablist" aria-label="Workspace views"><button data-view="summary" role="tab" aria-selected="true">Summary</button><button data-view="api" role="tab" aria-selected="false">API client</button><button data-view="workbook" role="tab" aria-selected="false">Workbook</button><button data-view="requests" role="tab" aria-selected="false">Requests</button><button data-view="history" role="tab" aria-selected="false">Run history</button><button data-view="output" role="tab" aria-selected="false">Output <span id="output-count" class="count">0</span></button></div>
+          <div class="report-actions"><button id="toggle-editor" class="quiet-button" type="button" aria-pressed="false" title="Show only report results">Focus results</button><span id="run-badge" class="run-badge">Ready</span><button id="export-report" class="export-button" disabled>↓ Export Excel</button></div>
+        </div>
+        <div id="result-content" class="result-content" role="tabpanel" tabindex="0"><div class="empty-state"><span class="empty-symbol" aria-hidden="true">▤</span><h1>Your next report starts here.</h1><p>Open a filter, select its collection, and run your report.<br>Your summary and formatted worksheets will appear here.</p><button id="open-example" class="outline-button">Open the summary example <span aria-hidden="true">↗</span></button><p class="empty-note">Validate checks your definition. Run report executes its API requests.</p></div></div>
+      </section>
+    </main>
+  </div>
+
+  <footer class="statusbar"><span id="status-message" role="status" aria-live="polite">Ready</span><span>Report language · v1 compatible</span></footer>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <dialog id="file-dialog"><form id="file-form"><div class="dialog-header"><h2 id="dialog-title">New file</h2><button type="button" id="dialog-close" class="icon-button" aria-label="Close dialog">×</button></div><p id="dialog-description"></p><label id="path-label">Workspace path<input id="dialog-path" autocomplete="off" placeholder="filters/my-report.filter"></label><label id="file-type-label">File type<select id="new-file-type"><option value="filter">Report definition (.filter)</option><option value="collection">Postman collection (.json)</option></select></label><p id="dialog-error" class="form-error" role="alert"></p><div class="dialog-actions"><button type="button" id="dialog-cancel" class="outline-button">Cancel</button><button type="submit" id="dialog-submit" class="primary-button">Create file</button></div></form></dialog>
+
+  <dialog id="manage-dialog"><div class="dialog-header"><h2>Manage selection</h2><button id="manage-close" class="icon-button" aria-label="Close file actions">×</button></div><p id="manage-path"></p><button id="rename-file" class="action-row">Rename or move <span>↗</span></button><button id="save-as-file" class="action-row">Save open file as… <span>+</span></button><button id="reopen-file" class="action-row">Reload from disk <span>↻</span></button><button id="delete-file" class="action-row danger-text">Move to trash <span>×</span></button></dialog>
+
+  <dialog id="confirm-dialog"><div class="dialog-header"><h2 id="confirm-title">Unsaved changes</h2></div><p id="confirm-message"></p><div class="dialog-actions"><button id="confirm-no" class="outline-button">Cancel</button><button id="confirm-yes" class="primary-button">Continue</button></div></dialog>
+
+  <dialog id="help-dialog" class="help-dialog">
+    <div class="help-shell">
+      <header class="help-header">
+        <div><span class="eyebrow">REPORT LANGUAGE · COMPLETE REFERENCE</span><h2>Build filters and Excel reports.</h2><p>Select API requests, transform response rows, compare datasets, and compose a readable workbook summary. This language works on API responses; it is not a SQL database client.</p></div>
+        <button id="help-close" class="icon-button" aria-label="Close language guide">×</button>
+      </header>
+      <div class="help-tools">
+        <label class="help-search"><span aria-hidden="true">⌕</span><input id="help-search" type="search" placeholder="Search FILTER, DATE_PRESET, UNION, STATUS…" autocomplete="off" aria-label="Search the filter language guide"></label>
+        <span id="help-search-count" class="help-search-count" aria-live="polite">All topics</span>
+      </div>
+      <nav class="help-nav" aria-label="Filter guide sections">
+        <a href="#help-quick">Quick start</a><a href="#help-select">Selection</a><a href="#help-filter">Filtering</a><a href="#help-shape">Shaping</a><a href="#help-combine">Combine data</a><a href="#help-summary">Summary</a><a href="#help-rules">Rules</a><a href="#help-errors">Troubleshooting</a>
+      </nav>
+      <div class="help-content">
+        <section id="help-quick" class="help-section help-lead" data-help-section data-help-terms="quick start complete reqres example runnable">
+          <div class="help-section-heading"><span>01</span><div><h3>Quick start</h3><p>This example runs now with the bundled Reqres collection.</p></div></div>
+          <pre>COLLECTION reqres;
+REQUESTS "List users page 1", "Get single user";
+OUTPUT_PREFIX reqres-report;
+
+FILTER "List users page 1" WHERE id &gt; 0;
+COLUMNS "List users page 1":
+  id AS "User ID",
+  first_name AS "First name",
+  last_name AS "Last name",
+  email AS "Email";
+SHAPE "List users page 1" ORDER BY id ASC LIMIT 20;
+
+$USERS = FILTER "List users page 1" WHERE id &gt; 0;
+
+SUMMARY {
+  TITLE "Reqres user report" COLOR "#315D72";
+  DESCRIPTION "Users returned by the public API.";
+  METRIC "Users" = $USERS;
+  PARAGRAPH IF $USERS = 1 THEN "One user was returned."
+    ELSE $USERS + " users were returned.";
+  TABLE $USERS TITLE "Users"
+    COLUMNS id AS "ID", first_name AS "First name", email AS "Email";
+  STATUS;
+  METRICS;
+}</pre>
+          <p class="help-note"><strong>Run it:</strong> save as a <code>.filter</code> file, select the matching collection, choose <strong>Validate</strong>, then choose <strong>Run report</strong>. Every statement ends with <code>;</code>; the semicolon after a <code>SUMMARY</code> block is optional.</p>
+        </section>
+
+        <section id="help-select" class="help-section" data-help-section data-help-terms="collection output prefix requests request selection execution">
+          <div class="help-section-heading"><span>02</span><div><h3>Select what runs</h3><p>Choose the collection, requests, and output filename.</p></div></div>
+          <div class="help-reference-grid">
+            <article><h4>COLLECTION</h4><p>Targets one Postman collection. The name must match its filename or collection name.</p><pre>COLLECTION reqres;</pre></article>
+            <article><h4>REQUESTS / REQUEST</h4><p>Select several requests or add one request. Without either statement, every request runs.</p><pre>REQUESTS "List users", "Get user";
+REQUEST "List users";
+REQUEST "List users" WHERE active IS TRUE;</pre></article>
+            <article><h4>OUTPUT_PREFIX</h4><p>Sets the generated workbook filename prefix. Both forms are equivalent.</p><pre>OUTPUT_PREFIX daily-report;
+SET OUTPUT_PREFIX daily-report;</pre></article>
+            <article><h4>Multiple collections</h4><p>Statements before the first collection are global defaults. Select one block using the collection picker or CLI option.</p><pre>SHAPE * LIMIT 200;
+
+COLLECTION users;
+REQUESTS "List users";
+
+COLLECTION orders;
+REQUESTS "List orders";</pre></article>
+          </div>
+        </section>
+
+        <section id="help-filter" class="help-section" data-help-section data-help-terms="filter where having operators and or not null true false in like ilike contains regex between date preset if then else variable">
+          <div class="help-section-heading"><span>03</span><div><h3>Filter response rows</h3><p>Predicates support grouping, comparisons, strings, dates, runtime variables, and conditional branches.</p></div></div>
+          <pre>FILTER "List users" WHERE id &gt;= 2 AND id &lt;= 5;
+FILTER * WHERE (status = active OR priority = high) AND NOT archived IS TRUE;
+FILTER "Orders" WHERE region IN ('US','CA') AND tier = $minTier;</pre>
+          <div class="help-table-wrap"><table class="help-table"><thead><tr><th>Type</th><th>Supported syntax</th><th>Example</th></tr></thead><tbody>
+            <tr><td>Comparison</td><td><code>= != &gt; &gt;= &lt; &lt;=</code></td><td><code>amount &gt;= 1000</code></td></tr>
+            <tr><td>Boolean logic</td><td><code>AND OR NOT ( )</code></td><td><code>(a = 1 OR b = 2) AND c = 3</code></td></tr>
+            <tr><td>Null / boolean</td><td><code>IS NULL</code>, <code>IS NOT NULL</code>, <code>IS TRUE</code>, <code>IS FALSE</code></td><td><code>deletedAt IS NULL</code></td></tr>
+            <tr><td>Membership</td><td><code>IN (...)</code>, <code>NOT IN (...)</code></td><td><code>status IN ('active','pending')</code></td></tr>
+            <tr><td>Text</td><td><code>CONTAINS</code>, <code>NOT_CONTAINS</code>, <code>STARTS_WITH</code>, <code>ENDS_WITH</code></td><td><code>email ENDS_WITH '.com'</code></td></tr>
+            <tr><td>Pattern</td><td><code>LIKE</code>, <code>ILIKE</code>, <code>NOT LIKE</code>, <code>NOT ILIKE</code>, <code>REGEX</code></td><td><code>code REGEX '^ERR-[0-9]+$'</code></td></tr>
+            <tr><td>Date</td><td><code>BETWEEN … AND …</code>, <code>DATE_PRESET</code></td><td><code>createdAt DATE_PRESET THIS_MONTH</code></td></tr>
+          </tbody></table></div>
+          <div class="help-split">
+            <div><h4>Evaluation order</h4><ol><li>Parentheses</li><li><code>NOT</code></li><li><code>AND</code></li><li><code>OR</code></li></ol><p>Numbers compare numerically first. Other values compare as case-insensitive text.</p></div>
+            <div><h4>Conditional filtering</h4><pre>FILTER * WHERE
+  IF priority = high
+  THEN (severity &gt; 7)
+  ELSE (severity &gt; 3);</pre><p>Without <code>ELSE</code>, a false condition lets the row pass.</p></div>
+          </div>
+          <h4>Runtime variables</h4><p>Use <code>$name</code> as a predicate value. Values resolve from the environment, credential profile, and filter configuration. A missing variable logs a warning and usually matches no rows.</p><pre>FILTER "Orders" WHERE ownerId = $targetUser;
+FILTER "Orders" WHERE region = $region AND amount &gt;= $minimum;</pre>
+        </section>
+
+        <section id="help-columns" class="help-section" data-help-section data-help-terms="columns projection aliases nested fields wildcard response sheet">
+          <div class="help-section-heading"><span>04</span><div><h3>Select and rename columns</h3><p>Project fields after filtering and shaping. Dot paths read flattened nested JSON.</p></div></div>
+          <pre>COLUMNS "List users":
+  id AS "User ID",
+  profile.name AS "Name",
+  company.address.city AS "City";
+
+COLUMNS *: id, createdAt;</pre>
+          <p>The exact request key replaces the <code>*</code> default. Request-level columns affect response sheets and summary variables sourced from that request; they do not alter lookup, union, set-operation, or compare source rows.</p>
+        </section>
+
+        <section id="help-dates" class="help-section" data-help-section data-help-terms="date config timezone format today yesterday week month quarter year between preset">
+          <div class="help-section-heading"><span>05</span><div><h3>Parse and filter dates</h3><p>Declare the format when automatic ISO-8601 parsing is not enough.</p></div></div>
+          <pre>DATE_CONFIG *.createdAt
+  FORMAT "yyyy-MM-dd'T'HH:mm:ss'Z'"
+  TIMEZONE UTC;
+
+FILTER "Events" WHERE createdAt DATE_PRESET THIS_MONTH;
+FILTER "Events" WHERE createdAt BETWEEN 2026-01-01 AND 2026-01-31;</pre>
+          <p><strong>Presets:</strong> <code>TODAY</code>, <code>YESTERDAY</code>, <code>THIS_WEEK</code>, <code>LAST_WEEK</code>, <code>THIS_MONTH</code>, <code>LAST_MONTH</code>, <code>THIS_QUARTER</code>, <code>LAST_QUARTER</code>, <code>THIS_YEAR</code>, <code>LAST_YEAR</code>.</p>
+          <p>Without <code>TIMEZONE</code>, the system timezone is used. A row does not match when its date cannot be parsed. For request names containing spaces, prefer <code>DATE_CONFIG *.<em>field</em></code>.</p>
+        </section>
+
+        <section id="help-shape" class="help-section" data-help-section data-help-terms="shape distinct order by asc desc limit offset group aggregate agg count sum avg min max having">
+          <div class="help-section-heading"><span>06</span><div><h3>Shape output datasets</h3><p>Sort, page, deduplicate, group, and aggregate after rows are collected.</p></div></div>
+          <pre>SHAPE "List users" DISTINCT ORDER BY id DESC LIMIT 50 OFFSET 0;
+
+SHAPE "Orders"
+  GROUP BY region
+  AGG COUNT(*) AS order_count,
+      SUM(amount) AS total,
+      AVG(amount) AS average,
+      MIN(amount) AS minimum,
+      MAX(amount) AS maximum
+  HAVING order_count &gt; 1
+  ORDER BY total DESC;</pre>
+          <p>Repeated <code>SHAPE</code> statements merge clause types; the later value replaces the same clause. <code>COUNT(*)</code> is valid, but <code>SUM(*)</code>, <code>AVG(*)</code>, <code>MIN(*)</code>, and <code>MAX(*)</code> are not. An exact output name replaces <code>SHAPE *</code>.</p>
+        </section>
+
+        <section id="help-expand" class="help-section" data-help-section data-help-terms="expand array unnest child sparse exceptions">
+          <div class="help-section-heading"><span>07</span><div><h3>Expand nested arrays</h3><p>Create one output row per array item while repeating its parent fields.</p></div></div>
+          <pre>EXPAND "Catalog" ON items;
+EXPAND "Catalog" ON items AS extras;
+
+# Input
+[{"category":"fruit","items":[{"id":1,"name":"apple"}]}]
+
+# Output fields
+category, items.id, items.name</pre>
+          <p><code>EXPAND</code> runs before <code>FILTER</code> and <code>SHAPE</code>. It requires an exact request name; <code>*</code> is not supported. Sparse child fields are grouped under the exception label.</p>
+        </section>
+
+        <section id="help-combine" class="help-section" data-help-section data-help-terms="lookup table join union all intersect except diff compare merge data provenance source">
+          <div class="help-section-heading"><span>08</span><div><h3>Combine and compare API data</h3><p>Build detail tables, merged datasets, differences, intersections, and value matrices.</p></div></div>
+          <div class="help-reference-grid">
+            <article><h4>LOOKUP_TABLE</h4><p>Calls a detail request once for each source row. <code>BY id AS itemid</code> injects the source ID as <code>{{itemid}}</code>. Detail fields use the <code>detail.</code> prefix.</p><pre>LOOKUP_TABLE "Items With Details"
+  FROM "List Items"
+  LOOKUP "Get Item Details"
+  BY id AS itemid
+  WHERE detail.price &gt;= 1000
+  COLUMNS id, name, detail.price;</pre></article>
+            <article><h4>UNION</h4><p>Merges two or more raw request datasets. The default removes duplicate rows; <code>ALL</code> preserves them.</p><pre>UNION "All Items"
+  FROM "Active Items", "Archived Items" ALL;
+SHAPE "All Items" ORDER BY id ASC;</pre></article>
+            <article><h4>INTERSECT</h4><p>Keeps complete rows found in every source and adds <code>_source</code> and <code>_in_…</code> provenance fields.</p><pre>INTERSECT CommonRows
+  FROM "System A", "System B";</pre></article>
+            <article><h4>EXCEPT</h4><p>Keeps complete rows from the first source that do not occur in any later source.</p><pre>EXCEPT MissingFromB
+  FROM "System A", "System B";</pre></article>
+            <article><h4>DIFF</h4><p>Returns the symmetric difference, grouped by source with provenance columns.</p><pre>DIFF Mismatches
+  FROM "System A", "System B";</pre></article>
+            <article><h4>COMPARE</h4><p>Compares one field across sources. The result contains the value, one presence column per source, and <code>_count</code>.</p><pre>COMPARE IdMatrix ON id
+  FROM "System A", "System B"
+  WHERE id &gt; 0
+  HAVING _count &gt; 1;</pre></article>
+          </div>
+          <p class="help-note">Set operations compare the complete JSON serialization of each row. They require at least two source requests. <code>COMPARE</code> compares only the named field. All sources are raw request rows; request-level <code>FILTER</code> and <code>COLUMNS</code> do not change these inputs.</p>
+        </section>
+
+        <section id="help-summary" class="help-section" data-help-section data-help-terms="summary title description paragraph metric field text kv lv table variable quick table qt label status metrics color conditional">
+          <div class="help-section-heading"><span>09</span><div><h3>Compose the Summary sheet</h3><p>Capture datasets as variables, then present counts, prose, tables, and request health.</p></div></div>
+          <h4>Summary variables</h4>
+          <pre>$USERS = FILTER "List users" WHERE id &gt; 0;
+$TOP = FILTER $USERS WHERE id &gt; 3;
+$DETAILS = TABLE "Items With Details";
+$ALL = UNION FROM "System A", "System B" ALL;
+$COMMON = INTERSECT FROM "System A", "System B";
+$ONLY_A = EXCEPT FROM "System A", "System B";
+$CHANGES = DIFF FROM "System A", "System B";
+$IDS = COMPARE ON id FROM "System A", "System B";</pre>
+          <div class="help-table-wrap"><table class="help-table"><thead><tr><th>Statement</th><th>Purpose</th><th>Example</th></tr></thead><tbody>
+            <tr><td><code>TITLE</code></td><td>Primary banner</td><td><code>TITLE "Daily report" COLOR "#315D72";</code></td></tr>
+            <tr><td><code>DESCRIPTION</code></td><td>Supporting banner</td><td><code>DESCRIPTION "Production API";</code></td></tr>
+            <tr><td><code>METRIC</code> / <code>KV</code></td><td>Prominent label and value</td><td><code>METRIC "Users" = $USERS;</code></td></tr>
+            <tr><td><code>FIELD</code> / <code>LV</code></td><td>Secondary label and value</td><td><code>FIELD "Region" = "India";</code></td></tr>
+            <tr><td><code>PARAGRAPH</code> / <code>TEXT</code></td><td>Readable narrative</td><td><code>PARAGRAPH $USERS + " users loaded.";</code></td></tr>
+            <tr><td><code>TABLE $var</code> / <code>$var;</code></td><td>Dataset table</td><td><code>TABLE $USERS TITLE "Users" COLUMNS id AS "ID";</code></td></tr>
+            <tr><td><code>QT</code> / <code>QUICK_TABLE</code></td><td>Inline table with headers</td><td><code>QT "Counts" HEADERS Metric, Value ROW "Users", $USERS;</code></td></tr>
+            <tr><td><code>LABEL_TABLE</code></td><td>Inline table without default headers</td><td><code>LABEL_TABLE "Counts" ROW "Users" $USERS;</code></td></tr>
+            <tr><td><code>STATUS</code></td><td>Request, method, status, success, duration</td><td><code>STATUS COLOR DARK_GREEN;</code></td></tr>
+            <tr><td><code>METRICS</code></td><td>Collection-wide execution totals</td><td><code>METRICS;</code></td></tr>
+          </tbody></table></div>
+          <div class="help-split">
+            <div><h4>Conditional text</h4><pre>PARAGRAPH IF $USERS = 0
+  THEN "No users were returned."
+  ELSE IF $USERS = 1
+  THEN "One user was returned."
+  ELSE $USERS + " users were returned.";
+
+KV "Coverage" IF $A &gt; 0 AND $B &gt; 0
+  THEN "Complete" ELSE "Incomplete";</pre></div>
+            <div><h4>Inline tables</h4><pre>QT "Scorecard"
+  HEADERS Metric, Value, Health
+  ROW "Users", $USERS,
+    IF $USERS &gt; 0 THEN "Ready" ELSE "Empty";
+
+LABEL_TABLE "Context"
+  ROW "Environment" "Production"
+  ROW "Region" $REGION;</pre></div>
+          </div>
+          <h4>Colors</h4><p><code>TITLE</code>, <code>DESCRIPTION</code>, and <code>STATUS</code> accept <code>COLOR "#RRGGBB"</code> or a named color. Common names include <code>DARK_BLUE</code>, <code>DARK_GREEN</code>, <code>SEA_GREEN</code>, <code>TEAL</code>, <code>GOLD</code>, <code>VIOLET</code>, <code>RED</code>, <code>ROSE</code>, <code>BROWN</code>, <code>INDIGO</code>, and <code>GREY_40_PERCENT</code>. Any Apache POI IndexedColors name is accepted.</p>
+          <p>One-row, one-column variables display their cell value; multi-row variables display a row count. Boolean values (<code>true/false</code> and <code>yes/no</code>) receive success/failure formatting. Summary statements may also appear outside <code>SUMMARY { … }</code>.</p>
+        </section>
+
+        <section id="help-rules" class="help-section" data-help-section data-help-terms="rules target matrix order workbook sheets merge wildcard parser scope limitation">
+          <div class="help-section-heading"><span>10</span><div><h3>Execution rules and workbook output</h3><p>Know when each transformation runs and what it can target.</p></div></div>
+          <div class="help-table-wrap"><table class="help-table"><thead><tr><th>Output</th><th>Execution order</th></tr></thead><tbody>
+            <tr><td>Response sheet</td><td>Raw rows → <code>EXPAND</code> → <code>FILTER</code> → <code>SHAPE</code> → <code>COLUMNS</code></td></tr>
+            <tr><td>Lookup table</td><td>Raw source → detail requests → lookup <code>WHERE</code> → <code>SHAPE</code> → lookup <code>COLUMNS</code></td></tr>
+            <tr><td>Union</td><td>Raw rows → <code>UNION</code> → <code>SHAPE</code></td></tr>
+            <tr><td>Set operation</td><td>Raw rows → <code>INTERSECT</code>/<code>EXCEPT</code>/<code>DIFF</code> → <code>SHAPE</code></td></tr>
+            <tr><td>Compare</td><td>Raw rows → <code>COMPARE</code> value matrix → <code>SHAPE</code></td></tr>
+          </tbody></table></div>
+          <p><strong>Valid wildcard targets:</strong> <code>COLUMNS *</code>, <code>FILTER *</code>, <code>DATE_CONFIG *.<em>field</em></code>, and <code>SHAPE *</code>. Request selection, expansion, lookup, union, set operations, and compare require explicit names.</p>
+          <p><strong>Workbook order:</strong> Summary → Index → Results → Postman folder sheets → response sheets → lookup sheets → union sheets → set-operation sheets → compare sheets. Empty response datasets are skipped. Large results may be split across multiple workbooks.</p>
+          <p><strong>Current scope:</strong> multi-source joins are modeled internally but do not have a filter-language statement. Use <code>LOOKUP_TABLE</code> for request-per-row enrichment or the available union and set operations.</p>
+        </section>
+
+        <section id="help-errors" class="help-section" data-help-section data-help-terms="mistakes errors troubleshooting request not found dates wildcard lookup union expand intersect except diff compare">
+          <div class="help-section-heading"><span>11</span><div><h3>Troubleshooting</h3><p>Common causes and the quickest correction.</p></div></div>
+          <div class="help-table-wrap"><table class="help-table"><thead><tr><th>Problem</th><th>Fix</th></tr></thead><tbody>
+            <tr><td>Request not found</td><td>Copy the exact, case-sensitive Postman request name from the request outline.</td></tr>
+            <tr><td>Date filter returns no rows</td><td>Add the correct <code>DATE_CONFIG</code> format and timezone.</td></tr>
+            <tr><td>Wildcard filter or shape seems ignored</td><td>An exact request/output rule replaces the wildcard default.</td></tr>
+            <tr><td><code>COLUMNS</code> does not alter a lookup</td><td>Put <code>COLUMNS</code> inside <code>LOOKUP_TABLE</code>.</td></tr>
+            <tr><td><code>FILTER</code> does not alter union/set inputs</td><td>Those operations read raw rows. Shape their generated output instead.</td></tr>
+            <tr><td><code>EXPAND *</code> fails</td><td>Name the request explicitly.</td></tr>
+            <tr><td>Set operation returns zero rows</td><td>Full JSON rows must match exactly; use <code>COMPARE</code> when only one field should match.</td></tr>
+            <tr><td>Compare field is missing</td><td>Inspect the API response and use its flattened field path.</td></tr>
+            <tr><td>Report runs unexpected write requests</td><td>Add <code>REQUESTS</code>; without it, every collection request executes.</td></tr>
+          </tbody></table></div>
+          <h4>Editor shortcuts</h4><p><kbd>⌘ / Ctrl + Enter</kbd> Run report · <kbd>⌘ / Ctrl + Shift + Enter</kbd> Validate · <kbd>⌘ / Ctrl + S</kbd> Save · <kbd>Tab</kbd> Insert two spaces · <kbd>Esc</kbd>, then <kbd>Tab</kbd> Leave the editor</p>
+        </section>
+
+        <div id="help-empty" class="help-empty" hidden><strong>No matching topic.</strong><span>Try a keyword such as FILTER, DATE, UNION, TABLE, STATUS, or COLOR.</span></div>
+      </div>
+    </div>
+  </dialog>
+</body>
+</html>

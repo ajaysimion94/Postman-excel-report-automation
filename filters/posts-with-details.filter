@@ -1,8 +1,0 @@
-COLLECTION my-collection;
-REQUESTS "List Items", "Get Item Details";
-
-LOOKUP_TABLE "Items With Details"
-  FROM "List Items"
-  LOOKUP "Get Item Details"
-  BY id AS itemid
-  COLUMNS id, name, detail.itemid, detail.name;

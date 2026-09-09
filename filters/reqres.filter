@@ -1,0 +1,38 @@
+# Verified public report sample. Authentication and write examples stay available
+# in the collection API client, but this report runs only read-only GET requests.
+COLLECTION reqres;
+REQUESTS "List users page 1", "Get single user";
+OUTPUT_PREFIX reqres-report;
+
+COLUMNS "List users page 1":
+  id AS "User ID",
+  first_name AS "First name",
+  last_name AS "Last name",
+  email AS "Email",
+  avatar AS "Avatar";
+
+COLUMNS "Get single user":
+  data.id AS "User ID",
+  data.first_name AS "First name",
+  data.last_name AS "Last name",
+  data.email AS "Email",
+  support.url AS "Support URL";
+
+$USERS = FILTER "List users page 1" WHERE id > 0;
+$PROFILE = FILTER "Get single user" WHERE data.id > 0;
+
+SUMMARY {
+  TITLE "Reqres user report" COLOR "#315D72";
+  DESCRIPTION "A verified read-only report generated from the public Reqres sample API." COLOR "#55798A";
+  METRIC "Users on page 1" = $USERS;
+  METRIC "Profiles loaded" = $PROFILE;
+  PARAGRAPH IF $USERS = 0 THEN "No users were returned."
+    ELSE IF $USERS = 1 THEN "One user was returned."
+    ELSE $USERS + " users were returned.";
+  TABLE $USERS TITLE "Users"
+    COLUMNS id AS "User ID", first_name AS "First name", last_name AS "Last name", email AS "Email";
+  TABLE $PROFILE TITLE "Selected profile"
+    COLUMNS data.id AS "User ID", data.first_name AS "First name", data.last_name AS "Last name", data.email AS "Email";
+  STATUS COLOR "#315D72";
+  METRICS;
+}

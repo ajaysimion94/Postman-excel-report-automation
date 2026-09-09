@@ -1,0 +1,70 @@
+{
+  "info": {
+    "name": "PokéAPI – Open API Testing",
+    "_postman_id": "61b27afe-6bf3-4e12-a6ee-d57130e70af6",
+    "description": "Read-only public endpoints for testing paginated resources and nested Pokémon JSON.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "https://pokeapi.co/api/v2" }
+  ],
+  "item": [
+    {
+      "name": "Reference lists",
+      "item": [
+        {
+          "name": "List Pokémon",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Accept", "value": "application/json" }],
+            "description": "Returns the first 15 Pokémon using the API's standard paginated results array.",
+            "url": {
+              "raw": "{{baseUrl}}/pokemon?limit=15&offset=0",
+              "host": ["{{baseUrl}}"],
+              "path": ["pokemon"],
+              "query": [
+                { "key": "limit", "value": "15" },
+                { "key": "offset", "value": "0" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Pokémon types",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Accept", "value": "application/json" }],
+            "description": "Returns 10 Pokémon type resources for a second worksheet.",
+            "url": {
+              "raw": "{{baseUrl}}/type?limit=10&offset=0",
+              "host": ["{{baseUrl}}"],
+              "path": ["type"],
+              "query": [
+                { "key": "limit", "value": "10" },
+                { "key": "offset", "value": "0" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Details",
+      "item": [
+        {
+          "name": "Get Pikachu details",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Accept", "value": "application/json" }],
+            "description": "A rich nested response for experimenting with Pretty, Table, and Raw response views.",
+            "url": {
+              "raw": "{{baseUrl}}/pokemon/pikachu",
+              "host": ["{{baseUrl}}"],
+              "path": ["pokemon", "pikachu"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
