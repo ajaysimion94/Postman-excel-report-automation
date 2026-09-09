@@ -7,7 +7,7 @@ const encode = encodeURIComponent;
 const state = {token:'', files:[], documents:[], active:null, selected:'filters', collapsed:new Set(), collection:'', resultHidden:false, editorHidden:false,
   run:null, activeRun:null, history:[], view:'summary', logs:[], reportPath:null, sheet:0, offset:0, renderVersion:0, previewCache:new Map(), busy:false,
   apiCollectionPath:null, apiCollection:null, apiRequestIndex:0, apiResponse:null, apiSending:false,
-  apiRequestTab:'params', apiResponseView:'pretty', apiResponseDataset:0, apiTableFilter:''};
+  apiRequestTab:'params', apiVariablesSaving:false, apiVariablesSaved:'', apiResponseView:'pretty', apiResponseDataset:0, apiTableFilter:''};
 const summaryBlock = `SUMMARY {
   TITLE "API execution report" COLOR "#245C50";
   DESCRIPTION "Request outcomes and execution details.";
@@ -181,6 +181,8 @@ async function openApiCollection(path) {
   state.apiResponseView = 'pretty';
   state.apiResponseDataset = 0;
   state.apiTableFilter = '';
+  state.apiVariablesSaving = false;
+  state.apiVariablesSaved = '';
   setResultsOnly(true);
   setView('api');
   renderTree();
@@ -188,6 +190,7 @@ async function openApiCollection(path) {
   if (state.apiCollectionPath !== path) return;
   if (results[0].status === 'rejected') throw results[0].reason;
   state.apiCollection = prepareApiCollection(results[0].value);
+  state.apiVariablesSaved = apiVariableSignature();
   renderResult();
 }
 
@@ -413,6 +416,7 @@ async function validateOrRun(execute) {
   state.busy = true; updateControls();
   try {
     const body = {collection:state.collection, source:doc.path.endsWith('.filter') ? doc.content : '', filename:doc.path.endsWith('.filter') ? doc.path : ''};
+    if (execute && $('output-file-pattern').value.trim()) body.outputFile = $('output-file-pattern').value.trim();
     const collectionDoc = state.documents.find(item => item.path === state.collection);
     if (collectionDoc) body.collectionSource = collectionDoc.content;
     const result = await api(execute ? '/api/runs' : '/api/validate', {method:'POST', body});
@@ -449,7 +453,9 @@ async function runSavedFilter(path) {
   if (state.busy || state.activeRun) return;
   state.busy = true; state.selected = path; renderTree(); updateControls();
   try {
-    const result = await api('/api/runs/saved-filter', {method:'POST', body:{filter:path, collection:state.collection || undefined}});
+    const body = {filter:path, collection:state.collection || undefined};
+    if ($('output-file-pattern').value.trim()) body.outputFile = $('output-file-pattern').value.trim();
+    const result = await api('/api/runs/saved-filter', {method:'POST', body});
     beginRun(result, true);
   } finally { state.busy = false; updateControls(); }
 }
@@ -550,14 +556,18 @@ function prepareApiCollection(collection) {
   const variables = Array.isArray(collection.variables)
     ? normalizeRows(collection.variables)
     : Object.entries(collection.variables || {}).map(([key,value]) => ({key, value:String(value ?? ''), enabled:true}));
-  return {...collection, variables, requests:(collection.requests || []).map(request => ({
-    ...request,
-    headers:normalizeRows(request.headers),
-    params:normalizeRows(request.params),
-    auth:{type:request.auth?.type || 'noauth', values:{...(request.auth?.values || {})}},
-    bodyMode:['none','raw','urlencoded','formdata'].includes(request.bodyMode) ? request.bodyMode : request.body ? 'raw' : 'none',
-    bodyFields:normalizeRows(request.bodyFields).map(field => ({...field, type:field.type || 'text'}))
-  }))};
+  return {...collection, variables, requests:(collection.requests || []).map(request => {
+    const prepared = {
+      ...request,
+      headers:normalizeRows(request.headers),
+      params:normalizeRows(request.params),
+      auth:{type:request.auth?.type || 'noauth', values:{...(request.auth?.values || {})}},
+      bodyMode:['none','raw','urlencoded','formdata'].includes(request.bodyMode) ? request.bodyMode : request.body ? 'raw' : 'none',
+      bodyFields:normalizeRows(request.bodyFields).map(field => ({...field, type:field.type || 'text'}))
+    };
+    if (!prepared.params.length && prepared.url.includes('?')) syncParamsFromUrl(prepared);
+    return prepared;
+  })};
 }
 
 function decodeQueryPart(value) {
@@ -604,6 +614,55 @@ function apiVariablePayload() {
     const key = row.key.trim().replace(/^\{\{\s*/, '').replace(/\s*}}$/, '');
     return [key, row.value];
   }).filter(([key]) => key));
+}
+
+function apiCollectionVariableEntries() {
+  const values = new Map();
+  (state.apiCollection?.variables || []).forEach(row => {
+    const key = row.key.trim().replace(/^\{\{\s*/, '').replace(/\s*}}$/, '');
+    if (key) values.set(key, String(row.value ?? ''));
+  });
+  return [...values].map(([key,value]) => ({key,value}));
+}
+
+function apiVariableSignature() {
+  return JSON.stringify(apiCollectionVariableEntries());
+}
+
+function apiVariablesDirty() {
+  return apiVariableSignature() !== state.apiVariablesSaved;
+}
+
+async function saveApiVariables() {
+  if (!state.apiCollectionPath || state.apiVariablesSaving || !apiVariablesDirty()) return;
+  state.apiVariablesSaving = true;
+  renderResult();
+  try {
+    const open = state.documents.find(document => document.path === state.apiCollectionPath);
+    const sourceDocument = open || await api(`/api/file?path=${encode(state.apiCollectionPath)}`);
+    let collection;
+    try { collection = JSON.parse(sourceDocument.content); }
+    catch { throw new Error('The collection JSON is invalid. Fix it before saving variables.'); }
+    if (!collection || typeof collection !== 'object' || Array.isArray(collection)) throw new Error('The collection JSON must be an object.');
+    const existing = new Map((Array.isArray(collection.variable) ? collection.variable : [])
+      .filter(variable => variable && typeof variable === 'object' && variable.key !== undefined)
+      .map(variable => [String(variable.key), variable]));
+    collection.variable = apiCollectionVariableEntries().map(({key,value}) => ({...(existing.get(key) || {}), key, value,
+      type:existing.get(key)?.type || 'string'}));
+    const content = JSON.stringify(collection, null, 2) + '\n';
+    const saved = await api('/api/file', {method:'PUT', body:{path:state.apiCollectionPath, content, revision:sourceDocument.revision}});
+    if (open) {
+      open.content = content; open.saved = content; open.revision = saved.revision;
+      if (state.active === open.path) { $('editor').value = content; renderEditor(); }
+      renderDocumentTabs(); updateControls();
+    }
+    state.apiVariablesSaved = apiVariableSignature();
+    await refreshFiles();
+    notify(`Variables saved to ${basename(state.apiCollectionPath)}.`);
+  } finally {
+    state.apiVariablesSaving = false;
+    renderResult();
+  }
 }
 
 function prettyResponseBody(body) {
@@ -792,7 +851,7 @@ function apiRequestPanel(request) {
   if (state.apiRequestTab === 'auth') return `<div class="api-config-panel">${apiAuthPanel(request)}</div>`;
   if (state.apiRequestTab === 'headers') return `<div class="api-config-panel">${apiKeyValueEditor('header', request.headers, {title:'Headers', key:'Header', keyPlaceholder:'Header name'})}<button class="api-add-row" data-add-api-row="header">+ Add header</button></div>`;
   if (state.apiRequestTab === 'body') return `<div class="api-config-panel">${apiBodyPanel(request)}</div>`;
-  return `<div class="api-config-panel"><div class="api-variable-intro"><strong>Per-send variables</strong><span>Use names in the URL, params, headers, auth, or body as <code>{{NAME}}</code>.</span></div>${apiKeyValueEditor('variable', state.apiCollection.variables, {title:'Variables', key:'Variable', keyPlaceholder:'ID', valuePlaceholder:'Value'})}<button class="api-add-row" data-add-api-row="variable">+ Add variable</button></div>`;
+  return `<div class="api-config-panel"><div class="api-variable-intro"><div><strong>Collection variables</strong><span>Use names anywhere in the request as <code>{{NAME}}</code>. Changes apply immediately; save them to keep them.</span></div><button class="api-save-variables" data-save-api-variables ${state.apiVariablesSaving || !apiVariablesDirty() ? 'disabled' : ''}>${state.apiVariablesSaving ? 'Saving…' : 'Save to collection'}</button></div>${apiKeyValueEditor('variable', state.apiCollection.variables, {title:'Variables', key:'Variable', keyPlaceholder:'baseUrl', valuePlaceholder:'https://api.example.com'})}<button class="api-add-row" data-add-api-row="variable">+ Add variable</button></div>`;
 }
 
 function apiClientView(collection) {
@@ -957,6 +1016,9 @@ bind('save-file','click',saveDocument);
 bind('run-report','click',() => validateOrRun(true));
 bind('validate-report','click',() => validateOrRun(false));
 bind('collection-select','change',async () => { state.collection = $('collection-select').value; await refreshOutline(); updateControls(); });
+bind('output-file-pattern','change',() => {
+  try { localStorage.setItem('report-studio.output-file-pattern', $('output-file-pattern').value.trim()); } catch {}
+});
 bind('request-outline','click',event => { const button = event.target.closest('[data-request]'); if (button) insertText(JSON.stringify(button.dataset.request)); });
 bind('insert-summary','click',() => insertText('\n' + summaryBlock + '\n'));
 bind('toggle-reference','click',() => {
@@ -1001,6 +1063,7 @@ bind('result-content','click',async event => {
       renderResult();
     }
   }
+  else if ('saveApiVariables' in button.dataset) await saveApiVariables();
   else if (button.dataset.apiResponseView) { state.apiResponseView = button.dataset.apiResponseView; renderResult(); }
   else if (button.dataset.copyResponse) await copyApiResponse();
   else if (button.dataset.sendRequest) await sendApiRequest();
@@ -1050,6 +1113,10 @@ bind('result-content','input',event => {
       const workspace = event.target.closest?.('.api-request-workspace');
       const urlInput = workspace?.querySelector?.('[data-api-field="url"]');
       if (urlInput) urlInput.value = request.url;
+    } else if (event.target.dataset.apiRowKind === 'variable') {
+      const panel = event.target.closest?.('.api-config-panel');
+      const save = panel?.querySelector?.('[data-save-api-variables]');
+      if (save) save.disabled = !apiVariablesDirty();
     }
   }
 });
@@ -1119,6 +1186,7 @@ async function initialize() {
     try {
       state.resultHidden = localStorage.getItem('report-studio.results-hidden') === 'true';
       state.editorHidden = localStorage.getItem('report-studio.results-only') === 'true';
+      $('output-file-pattern').value = localStorage.getItem('report-studio.output-file-pattern') || '';
       if (state.editorHidden) state.resultHidden = false;
     } catch {}
     const session = await api('/api/session');

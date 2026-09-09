@@ -182,13 +182,15 @@ public final class WebServer implements AutoCloseable {
                 String source = required(body, "source");
                 String filename = body.path("filename").asText("untitled.filter");
                 String collectionSource = body.path("collectionSource").isTextual() ? body.get("collectionSource").asText() : null;
+                String outputFile = body.path("outputFile").isTextual() ? body.get("outputFile").asText() : null;
                 json(exchange, path.endsWith("validate") ? 200 : 202, path.endsWith("validate")
-                        ? reports.validate(collection, source, filename, collectionSource) : reports.start(collection, source, filename, collectionSource));
+                        ? reports.validate(collection, source, filename, collectionSource) : reports.start(collection, source, filename, collectionSource, outputFile));
             }
             case "POST /api/runs/saved-filter" -> {
                 JsonNode body = body(exchange);
                 String requestedCollection = body.path("collection").isTextual() ? body.get("collection").asText() : null;
-                json(exchange, 202, reports.startSavedFilter(required(body, "filter"), requestedCollection));
+                String outputFile = body.path("outputFile").isTextual() ? body.get("outputFile").asText() : null;
+                json(exchange, 202, reports.startSavedFilter(required(body, "filter"), requestedCollection, outputFile));
             }
             case "GET /api/runs" -> json(exchange, 200, reports.history());
             case "GET /api/run" -> json(exchange, 200, reports.get(query.get("id")));
@@ -217,6 +219,7 @@ public final class WebServer implements AutoCloseable {
         String resource = switch (path) {
             case "/", "/index.html" -> "index.html";
             case "/app.js" -> "app.js";
+            case "/guided-workflow.js" -> "guided-workflow.js";
             case "/styles.css" -> "styles.css";
             default -> throw new WebException(404, "Page not found.");
         };

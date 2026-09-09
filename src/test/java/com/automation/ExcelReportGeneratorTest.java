@@ -33,6 +33,42 @@ import static org.junit.jupiter.api.Assertions.*;
 class ExcelReportGeneratorTest {
 
     @Test
+    void guidedNestedDatasetDefinitionFiltersNamesWithinTheSameStudentRow() throws Exception {
+        Path output = Files.createTempFile("report-guided-school", ".xlsx");
+        FilterSpec spec = FilterQueryParser.parseSource("""
+                COLLECTION "school";
+                REQUESTS "Get school";
+                EXPAND "Get school" ON School.class.students;
+                FILTER "Get school" WHERE School.class.students.student.age < 13;
+                COLUMNS "Get school": School.class.students.student.name AS "Student name";
+                """, Path.of("guided-school.filter"), null);
+        RuntimeConfig config = new RuntimeConfig(output, null, output, true, Map.of(), spec);
+        PostmanCollection collection = new PostmanCollection("School", Map.of(), List.of());
+        String body = """
+                {"School":{"class":{"students":[
+                  {"student":{"name":"Asha","age":12}},
+                  {"student":{"name":"Ben","age":14}},
+                  {"student":{"name":"Mina","age":11}}
+                ]}}}
+                """;
+        List<ExecutionResult> results = List.of(new ExecutionResult("Root", "Get school", "GET",
+                "https://example.test/school", 200, 8, true, "", body, body, Instant.now(), List.of()));
+
+        new ExcelReportGenerator().generate(collection, results, config, new RequestExecutor());
+
+        try (InputStream input = Files.newInputStream(output); XSSFWorkbook workbook = new XSSFWorkbook(input)) {
+            var sheet = workbook.getSheet("Get school");
+            assertNotNull(sheet);
+            StringBuilder text = new StringBuilder();
+            sheet.forEach(row -> row.forEach(cell -> text.append(cell.toString()).append('\n')));
+            assertTrue(text.toString().contains("Student name"));
+            assertTrue(text.toString().contains("Asha"));
+            assertTrue(text.toString().contains("Mina"));
+            assertFalse(text.toString().contains("Ben"));
+        }
+    }
+
+    @Test
     void expandUnnestsNestedArrayIntoRows() throws Exception {
         Path output = Files.createTempFile("report-expand", ".xlsx");
         FilterSpec spec = new FilterSpec(null, null, null, null, null, null,
@@ -125,6 +161,29 @@ class ExcelReportGeneratorTest {
             assertEquals("Index", workbook.getSheetAt(1).getSheetName());
             assertEquals("Results", workbook.getSheetAt(2).getSheetName());
             assertEquals("Users", workbook.getSheetAt(3).getSheetName());
+        }
+    }
+
+    @Test
+    void rendersJsonArrayAsTableInResultsResponseBody() throws Exception {
+        Path output = Files.createTempFile("report-results-response", ".xlsx");
+        RuntimeConfig config = new RuntimeConfig(output, null, output, true, Map.of(), null);
+        PostmanCollection collection = new PostmanCollection("Demo", Map.of(), List.of());
+        String body = "{\"page\":1,\"data\":[{\"id\":1,\"email\":\"george@example.com\"},"
+                + "{\"id\":2,\"email\":\"janet@example.com\"}]}";
+        List<ExecutionResult> results = List.of(
+                new ExecutionResult("Users", "List Users", "GET", "https://example.com/users",
+                        200, 120, true, "", body, body, Instant.now(), List.of())
+        );
+
+        new ExcelReportGenerator().generate(collection, results, config, new RequestExecutor());
+
+        try (InputStream inputStream = Files.newInputStream(output);
+             XSSFWorkbook workbook = new XSSFWorkbook(inputStream)) {
+            var resultRow = workbook.getSheet("Results").getRow(3);
+            String rendered = resultRow.getCell(10).getStringCellValue();
+            assertEquals("data (2 rows)\nid | email\n1 | george@example.com\n2 | janet@example.com", rendered);
+            assertTrue(resultRow.getHeightInPoints() >= 60, "The response table should not be clipped in the workbook preview");
         }
     }
 

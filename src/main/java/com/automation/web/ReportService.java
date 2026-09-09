@@ -14,8 +14,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.nio.file.*;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.regex.Pattern;
 
 final class ReportService implements AutoCloseable {
     private final WorkspaceFiles files;
@@ -24,6 +27,9 @@ final class ReportService implements AutoCloseable {
     private final Map<String, Map<String, Object>> runs = new ConcurrentHashMap<>();
     private final ThreadPoolExecutor worker = new ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS,
             new ArrayBlockingQueue<>(4), runnable -> new Thread(runnable, "report-worker"));
+    private static final DateTimeFormatter OUTPUT_TIMESTAMP = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")
+            .withZone(ZoneId.systemDefault());
+    private static final Pattern OUTPUT_FILENAME = Pattern.compile("[A-Za-z0-9][A-Za-z0-9 ._()\\-]*\\.xlsx");
 
     private record Prepared(Path collectionPath, PostmanCollection collection, FilterSpec filter) {}
 
@@ -198,13 +204,15 @@ final class ReportService implements AutoCloseable {
                 "message", "The report definition is valid. Ready to run.");
     }
 
-    synchronized Map<String, Object> start(String collectionName, String source, String filename, String collectionSource) throws IOException {
+    synchronized Map<String, Object> start(String collectionName, String source, String filename,
+                                           String collectionSource, String outputFile) throws IOException {
         Prepared prepared = prepare(collectionName, source, filename, collectionSource);
-        return queue(prepared, filename);
+        return queue(prepared, filename, outputFile);
     }
 
     /** Runs a saved report definition without opening its source in the editor. */
-    synchronized Map<String, Object> startSavedFilter(String filterName, String requestedCollection) throws IOException {
+    synchronized Map<String, Object> startSavedFilter(String filterName, String requestedCollection,
+                                                      String outputFile) throws IOException {
         Path filterPath = files.resolve(filterName);
         if (!filterName.startsWith("filters/") || !filterName.endsWith(".filter") || !Files.isRegularFile(filterPath)) {
             throw new WebException(400, "Select a saved .filter file from Filters.");
@@ -214,10 +222,12 @@ final class ReportService implements AutoCloseable {
         }
         String source = Files.readString(filterPath);
         String collection = resolveSavedCollection(source, filterPath, requestedCollection);
-        return queue(prepare(collection, source, filterName, null), filterName);
+        return queue(prepare(collection, source, filterName, null), filterName, outputFile);
     }
 
-    private Map<String, Object> queue(Prepared prepared, String filename) {
+    private Map<String, Object> queue(Prepared prepared, String filename, String outputFile) {
+        String outputPattern = effectiveOutputPattern(prepared.filter(), outputFile);
+        validateOutputPattern(outputPattern);
         String id = UUID.randomUUID().toString();
         Map<String, Object> run = new LinkedHashMap<>();
         run.put("id", id);
@@ -230,8 +240,9 @@ final class ReportService implements AutoCloseable {
         run.put("completed", 0);
         run.put("requests", List.of());
         run.put("files", List.of());
+        run.put("outputPattern", outputPattern);
         publish(id, run);
-        try { worker.execute(() -> execute(id, prepared)); }
+        try { worker.execute(() -> execute(id, prepared, outputPattern)); }
         catch (RejectedExecutionException e) {
             update(id, Map.of("status", "failed", "error", "The run queue is full. Try again after an active run finishes."));
             throw new WebException(429, "The run queue is full. Try again after an active run finishes.");
@@ -296,11 +307,10 @@ final class ReportService implements AutoCloseable {
         return run;
     }
 
-    private void execute(String id, Prepared prepared) {
+    private void execute(String id, Prepared prepared, String outputPattern) {
         try {
             update(id, Map.of("status", "running", "phase", "Executing collection requests"));
-            String timestamp = Instant.now().toString().replace(':', '-').replace('.', '-');
-            Path output = files.resolve("reports/" + timestamp + "-" + id.substring(0, 8) + ".xlsx");
+            Path output = uniqueOutputPath(resolveOutputPath(outputPattern, prepared.collection().name()));
             CommandLineOptions options = new CommandLineOptions(prepared.collectionPath(), null, envPath, output,
                     true, null, false, null, null);
             RuntimeConfig config = CredentialLoader.load(options, prepared.filter());
@@ -326,6 +336,51 @@ final class ReportService implements AutoCloseable {
             update(id, Map.of("status", "failed", "phase", "Run failed", "finishedAt", Instant.now().toString(),
                     "error", Objects.toString(e.getMessage(), e.getClass().getSimpleName())));
         }
+    }
+
+    private static String effectiveOutputPattern(FilterSpec filter, String outputFile) {
+        if (outputFile != null && !outputFile.isBlank()) {
+            return outputFile.trim();
+        }
+        if (filter != null && filter.outputPrefix() != null && !filter.outputPrefix().isBlank()) {
+            return filter.outputPrefix().trim() + "-{timestamp}.xlsx";
+        }
+        return "report-{collection}-{timestamp}.xlsx";
+    }
+
+    private static void validateOutputPattern(String pattern) {
+        if (pattern.length() > 200 || pattern.contains("/") || pattern.contains("\\")) {
+            throw new WebException(400, "Use a workbook filename only; reports are saved in the Reports folder.");
+        }
+        if (!pattern.toLowerCase(Locale.ROOT).endsWith(".xlsx")) {
+            throw new WebException(400, "The output filename must end in .xlsx.");
+        }
+        String specimen = pattern.replace("{collection}", "collection")
+                .replace("{timestamp}", "2026-09-09_12-00-00");
+        if (specimen.contains("{") || specimen.contains("}") || !OUTPUT_FILENAME.matcher(specimen).matches()) {
+            throw new WebException(400, "Use letters, numbers, spaces, . _ - ( ), and the {collection} or {timestamp} placeholders.");
+        }
+    }
+
+    private Path resolveOutputPath(String pattern, String collectionName) throws IOException {
+        String collection = Objects.toString(collectionName, "collection")
+                .replaceAll("[^A-Za-z0-9._-]+", "-").replaceAll("^-+|-+$", "");
+        if (collection.isBlank()) collection = "collection";
+        String filename = pattern.replace("{collection}", collection)
+                .replace("{timestamp}", OUTPUT_TIMESTAMP.format(Instant.now()));
+        return files.resolve("reports/" + filename);
+    }
+
+    private static Path uniqueOutputPath(Path output) {
+        if (!Files.exists(output)) return output;
+        String filename = output.getFileName().toString();
+        int extension = filename.toLowerCase(Locale.ROOT).lastIndexOf(".xlsx");
+        String base = filename.substring(0, extension);
+        for (int number = 2; number < 10_000; number++) {
+            Path candidate = output.resolveSibling(base + " (" + number + ").xlsx");
+            if (!Files.exists(candidate)) return candidate;
+        }
+        throw new IllegalStateException("Too many reports use this output filename.");
     }
 
     private static Map<String, Object> requestResult(ExecutionResult result) {

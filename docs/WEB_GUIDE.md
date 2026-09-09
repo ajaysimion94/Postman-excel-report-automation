@@ -30,6 +30,25 @@ environment file is `.env` inside the selected workspace. Environment variables,
 credential profiles, filter overrides, HTTP settings, and Postman compatibility
 rules use the existing Java engine.
 
+## Use the guided workspace
+
+Select **Guided workspace** in the application header when you want to build a report
+without writing filter syntax. The guided page can search generated reports, run a
+saved filter, add a collection, open a request in the API client, or build a new
+filter from a live response.
+
+For a new filter, choose a collection and request, run the request once to discover
+its datasets, then select output columns and optional row conditions. The live
+preview shows both sampled data and the generated `.filter` definition. You can add
+more requests from the same collection, configure the Summary worksheet, save the
+definition, and generate the Excel report. **Open draft in editor** moves the
+generated source into the full editor for advanced changes.
+
+Nested JSON arrays are shown as named datasets. A selected nested dataset compiles to
+the existing `EXPAND` syntax when the report engine requires it, so preview and Excel
+output use the same row scope. Conditions may use a field even when that field is not
+selected as an output column.
+
 Web mode manages these workspace subdirectories directly. It does not redirect the
 explorer to `COLLECTIONS_DIR` or `FILTERS_DIR` from `.env`. Import files or select the
 workspace that contains your collections and filters.
@@ -106,20 +125,21 @@ run read-only GET requests and require internet access, but no API key.
      header or query parameter.
    - **Headers** manages enabled request headers.
    - **Body** supports raw, `x-www-form-urlencoded`, and text `form-data` bodies.
-   - **Variables** supplies per-send values for placeholders used anywhere in the
-     request. For example, add `ID = 42` and use `{{ID}}` in a URL such as
-     `{{baseUrl}}/users/{{ID}}` or in a parameter value.
-4. Select **Send**. Collection and `.env` variables are loaded automatically; values
-   in the Variables tab override them for this API-client send only.
+   - **Variables** edits collection variables used anywhere in the request. For
+     example, add `ID = 42` and use `{{ID}}` in a URL such as
+     `{{baseUrl}}/users/{{ID}}` or in a parameter value. Select **Save to collection**
+     to write these values back to the collection JSON.
+4. Select **Send**. Collection and `.env` variables are loaded automatically; current
+   values in the Variables tab take precedence for this API-client send.
 5. Review the response status, elapsed time, error, or response body. Use **Pretty**
    for formatted JSON, **Table** for report-like rows and columns, or **Raw** for the
    original response text. Nested arrays such as `data.items` are detected as separate
    datasets. Objects and arrays contained in a dataset row appear as compact tables
    inside their parent cell, including values nested several levels deep.
 
-Edits made in the API client are temporary request overrides. They let you test safely
-without rewriting the collection file. To make a change permanent, select
-**View collection JSON**, edit the JSON source, and save it.
+Method, URL, parameter, auth, header, and body edits remain temporary request overrides.
+Variables can be saved directly from the Variables tab. For any other permanent change,
+select **View collection JSON**, edit the JSON source, and save it.
 
 The local API client does not expose unsupported Postman runtime features such as
 OAuth 2 flows, pre-request/test scripts, GraphQL mode, or local file uploads. Text

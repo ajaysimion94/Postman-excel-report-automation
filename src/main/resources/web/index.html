@@ -2,18 +2,20 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="description" content="A local workspace for Postman collections, report definitions, and Excel reports.">
   <meta name="theme-color" content="#192329">
   <title>Report Studio · Postman to Excel</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/styles.css">
   <script src="/app.js" defer></script>
+  <script src="/guided-workflow.js" defer></script>
 </head>
 <body>
   <header class="app-header">
     <button id="toggle-explorer" class="icon-button mobile-menu" title="Toggle file explorer" aria-label="Toggle file explorer">☰</button>
     <a class="brand" href="/" aria-label="Report Studio home"><span class="brand-mark" aria-hidden="true">r.</span><span>Report Studio<span class="brand-subtitle">API → EXCEL</span></span></a>
+    <button id="guided-toggle" class="guided-header-button" type="button" aria-pressed="false"><span aria-hidden="true">✦</span> Guided workspace</button>
     <button id="help-button" class="quiet-button">Language guide <span class="key-hint">?</span></button>
   </header>
 
@@ -35,7 +37,8 @@
       <div class="document-tabs" id="document-tabs" role="tablist" aria-label="Open files"></div>
       <div class="editor-toolbar">
         <div class="run-tools"><button id="run-report" class="primary-button" title="Run report (⌘/Ctrl+Enter)"><span aria-hidden="true">▶</span> Run report</button><button id="validate-report" class="quiet-button" title="Validate (⌘/Ctrl+Shift+Enter)">✓ Validate</button><span class="toolbar-divider"></span><button id="save-file" class="quiet-button" title="Save (⌘/Ctrl+S)">Save <span class="key-hint">⌘ S</span></button></div>
-        <label class="collection-picker"><span>Collection</span><select id="collection-select" aria-label="Collection to execute"><option value="">Select a collection</option></select></label>
+        <label class="output-picker"><span>Output</span><input id="output-file-pattern" type="text" maxlength="200" placeholder="report-{collection}-{timestamp}.xlsx" aria-label="Output workbook filename pattern" title="Use {collection} and {timestamp}; workbooks are saved in Reports"></label>
+        <select id="collection-select" hidden aria-hidden="true" tabindex="-1"><option value="">Select a collection</option></select>
         <button id="toggle-results" class="quiet-button" type="button" aria-controls="results-pane" aria-pressed="false" title="Hide report results">Hide results</button><button id="toggle-reference" class="icon-button" title="Toggle request outline" aria-label="Toggle request outline">☷</button>
       </div>
 
@@ -64,6 +67,35 @@
       </section>
     </main>
   </div>
+
+  <section id="guided-workspace" class="guided-workspace" aria-label="Guided report workspace" hidden>
+    <aside class="guided-rail">
+      <div class="guided-rail-heading">
+        <span class="guided-orbit" aria-hidden="true">✦</span>
+        <div><strong>Guided workspace</strong><small>Build with live API data</small></div>
+      </div>
+      <button class="guided-new-task" type="button" data-guide-new-task>＋ New task</button>
+      <nav class="guided-nav" aria-label="Guided workspace actions">
+        <button type="button" data-guide-action="create"><span>01</span>Create filter</button>
+        <button type="button" data-guide-action="reports"><span>02</span>Search reports</button>
+        <button type="button" data-guide-action="run"><span>03</span>Run a filter</button>
+        <button type="button" data-guide-action="test"><span>04</span>Test APIs</button>
+        <button type="button" data-guide-action="collection"><span>05</span>Add collection</button>
+      </nav>
+      <div class="guided-rail-note"><span class="status-dot"></span><div>Local workspace<small>Credentials stay in Report Studio</small></div></div>
+    </aside>
+    <main class="guided-conversation">
+      <header class="guided-topbar">
+        <div><span id="guided-kicker">NEW TASK</span><h1 id="guided-title" tabindex="-1">What are you working on?</h1></div>
+        <div class="guided-top-actions"><button id="guided-preview-toggle" type="button" class="quiet-button" aria-pressed="false">Preview</button><button id="guided-restart" type="button" class="quiet-button">Start over</button><button id="guided-close" type="button" class="icon-button" aria-label="Close guided workspace">×</button></div>
+      </header>
+      <div id="guided-content" class="guided-content" aria-live="polite"></div>
+    </main>
+    <aside class="guided-preview" aria-label="Live preview">
+      <div class="guided-preview-heading"><div><span>LIVE PREVIEW</span><strong id="guided-preview-title">Definition</strong></div><span id="guided-preview-state">Waiting for input</span></div>
+      <div id="guided-preview-content" class="guided-preview-content"></div>
+    </aside>
+  </section>
 
   <footer class="statusbar"><span id="status-message" role="status" aria-live="polite">Ready</span><span>Report language · v1 compatible</span></footer>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>

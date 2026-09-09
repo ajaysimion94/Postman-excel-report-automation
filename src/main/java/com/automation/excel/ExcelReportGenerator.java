@@ -1287,13 +1287,93 @@ public final class ExcelReportGenerator {
             setCell(row, column++, result.errorMessage(), textStyle);
             setCell(row, column++, String.join(" | ", result.assertions()), result.success() ? successStyle : failureStyle);
             if (includeBody) {
-                setCell(row, column, result.displayBody(), textStyle);
+                String responseBody = formatResultsResponseBody(result.displayBody());
+                setCell(row, column, responseBody, textStyle);
+                setResponseBodyRowHeight(row, responseBody);
             }
         }
 
         sheet.createFreezePane(0, 3);
         sheet.setAutoFilter(new org.apache.poi.ss.util.CellRangeAddress(2, 2, 0, headers.length - 1));
         autoSize(sheet, headers.length);
+    }
+
+    /**
+     * Makes a row-oriented JSON response readable in the Results sheet. The Results sheet has
+     * one row per request, so its response cell cannot become a separate Excel range. Instead,
+     * an object array such as {@code data} is rendered as a compact, line-separated table inside
+     * that cell. The dedicated response-data sheet still contains the same values as native Excel
+     * rows and columns.
+     */
+    private String formatResultsResponseBody(String body) {
+        if (body == null || body.isBlank()) {
+            return body;
+        }
+
+        try {
+            JsonNode root = new ObjectMapper().readTree(body);
+            String datasetName = "Response";
+            JsonNode array = root;
+
+            if (root.isObject()) {
+                array = null;
+                Iterator<Map.Entry<String, JsonNode>> fields = root.fields();
+                while (fields.hasNext()) {
+                    Map.Entry<String, JsonNode> field = fields.next();
+                    if (field.getValue().isArray()) {
+                        datasetName = field.getKey();
+                        array = field.getValue();
+                        break;
+                    }
+                }
+            }
+
+            if (array == null || !array.isArray() || array.isEmpty()) {
+                return body;
+            }
+
+            List<ObjectNode> rows = new ArrayList<>();
+            LinkedHashSet<String> columns = new LinkedHashSet<>();
+            for (JsonNode item : array) {
+                if (!item.isObject()) {
+                    return body;
+                }
+                ObjectNode row = flattenRow((ObjectNode) item);
+                rows.add(row);
+                row.fieldNames().forEachRemaining(columns::add);
+            }
+            if (rows.isEmpty() || columns.isEmpty()) {
+                return body;
+            }
+
+            StringBuilder table = new StringBuilder(datasetName)
+                    .append(" (").append(rows.size()).append(" rows)\n")
+                    .append(String.join(" | ", columns));
+            for (ObjectNode row : rows) {
+                table.append('\n');
+                boolean first = true;
+                for (String column : columns) {
+                    if (!first) table.append(" | ");
+                    String value = jsonNodeToString(row.get(column));
+                    table.append(value.replace('\r', ' ').replace('\n', ' '));
+                    first = false;
+                }
+            }
+            return table.toString();
+        } catch (Exception ignored) {
+            return body;
+        }
+    }
+
+    private void setResponseBodyRowHeight(Row row, String responseBody) {
+        if (responseBody == null || responseBody.isBlank()) {
+            return;
+        }
+        long lines = responseBody.lines().count();
+        // The workbook preview reads POI's stored row height, so wrapping alone would leave a
+        // multi-line response clipped to a single row there.
+        float height = Math.min(409f, Math.max(row.getHeightInPoints(), lines * 15f));
+        row.setHeightInPoints(height);
     }
 
     private void createFolderSheets(Workbook workbook, SheetStyleFactory styleFactory, List<ExecutionResult> results,

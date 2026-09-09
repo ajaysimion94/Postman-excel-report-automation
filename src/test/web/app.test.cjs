@@ -29,6 +29,8 @@ function client() {
     document: {
       getElementById(id) { assert.ok(elements.has(id), `Unknown static DOM binding: ${id}`); return elements.get(id); },
       querySelectorAll() { return []; }, querySelector() { return null; }, addEventListener() {},
+      body: {classList: {values:new Set(), add(value) { this.values.add(value); }, remove(value) { this.values.delete(value); },
+        contains(value) { return this.values.has(value); }, toggle(value, force) { const enabled = force === undefined ? !this.values.has(value) : force; enabled ? this.values.add(value) : this.values.delete(value); return enabled; }}},
       documentElement: {style: {setProperty() {}}}
     },
     window: {addEventListener() {}}, innerWidth: 1400,
@@ -37,7 +39,8 @@ function client() {
     fetch() { throw new Error('Unexpected network request in client test'); },
     getComputedStyle() { return {lineHeight: '22px'}; }
   });
-  const source = fs.readFileSync(path.join(directory, 'app.js'), 'utf8').replace(/\ninitialize\(\);\s*$/, '\n');
+  const source = fs.readFileSync(path.join(directory, 'app.js'), 'utf8').replace(/\ninitialize\(\);\s*$/, '\n')
+    + '\n' + fs.readFileSync(path.join(directory, 'guided-workflow.js'), 'utf8');
   vm.runInContext(source, context);
   return {context, elements, run: code => vm.runInContext(code, context)};
 }
@@ -107,6 +110,21 @@ test('validation uses unsaved collection and filter buffers without saving eithe
   assert.equal(app.run('calls[0].body.collectionSource'), '{"item":[]}');
   assert.equal(app.run('calls[0].body.source'), 'METRICS;');
   assert.equal(app.run('activeDocument().saved'), 'TITLE "Old";');
+});
+
+test('running a report sends the chosen output filename pattern', async () => {
+  const app = client();
+  app.elements.get('output-file-pattern').value = 'daily-{collection}-{timestamp}.xlsx';
+  app.run(`
+    state.documents = [{path:'filters/report.filter', content:'METRICS;', saved:'METRICS;', revision:'1'}];
+    state.active = 'filters/report.filter'; state.collection = 'collections/local.json';
+    beginRun = () => {};
+    api = async (path, options) => { globalThis.runRequest = {path, body:options.body}; return {id:'run-1'}; };
+    globalThis.pendingRun = validateOrRun(true);
+  `);
+  await app.context.pendingRun;
+  assert.equal(app.run('runRequest.path'), '/api/runs');
+  assert.equal(app.run('runRequest.body.outputFile'), 'daily-{collection}-{timestamp}.xlsx');
 });
 
 test('edits made during an in-flight save remain marked unsaved', async () => {
@@ -328,6 +346,38 @@ test('API client syncs params, variables, auth, and structured bodies into a sen
   assert.equal(app.run('sent.body.variables.ID'), '42');
 });
 
+test('API client saves edited baseUrl back to the collection JSON', async () => {
+  const app = client();
+  app.context.collection = {name:'Users',path:'collections/users.json',variables:{baseUrl:'https://old.example',ID:'7'},requests:[{
+    index:0,name:'Get user',method:'GET',url:'{{baseUrl}}/users/{{ID}}',folder:'',description:'',disabled:false,
+    headers:[],params:[],auth:{type:'noauth',values:{}},body:'',bodyMode:'none',bodyFields:[]
+  }]};
+  app.run(`
+    state.apiCollectionPath = collection.path;
+    state.apiCollection = prepareApiCollection(collection);
+    state.apiVariablesSaved = apiVariableSignature();
+    state.apiRequestTab = 'variables';
+    state.apiCollection.variables[0].value = 'https://new.example';
+    globalThis.savedRequest = null;
+    api = async (path, options = {}) => {
+      if (path.startsWith('/api/file?')) return {path:collection.path,revision:'r1',content:JSON.stringify({info:{name:'Users'},variable:[{key:'baseUrl',value:'https://old.example',description:'API host'},{key:'ID',value:'7'}],item:[]})};
+      savedRequest = options.body;
+      return {revision:'r2'};
+    };
+    refreshFiles = async () => {};
+    renderResult = () => {};
+  `);
+  assert.equal(app.run('apiVariablesDirty()'), true);
+  assert.ok(app.run('apiRequestPanel(currentApiRequest())').includes('Save to collection'));
+  await app.run('saveApiVariables()');
+  const saved = JSON.parse(app.run('savedRequest.content'));
+  assert.equal(saved.variable[0].key, 'baseUrl');
+  assert.equal(saved.variable[0].value, 'https://new.example');
+  assert.equal(saved.variable[0].description, 'API host');
+  assert.equal(saved.variable[1].value, '7');
+  assert.equal(app.run('apiVariablesDirty()'), false);
+});
+
 test('JSON API responses render nested values as inline tables', () => {
   const app = client();
   app.context.body = JSON.stringify({data:{items:[
@@ -389,4 +439,86 @@ test('the API response workbench exposes clear modes, metadata, and loading feed
   assert.equal(app.run("formatResponseSize('abc')"), '3 B');
   app.run('state.apiSending = true');
   assert.ok(app.run('apiResponseContent(state.apiResponse)').includes('Sending request'));
+});
+
+test('guided workflow discovers nested row datasets with flattened field paths', () => {
+  const app = client();
+  app.context.body = JSON.stringify({School:{class:{students:[
+    {student:{name:'Asha',age:12}},
+    {student:{name:'Ben',age:14}}
+  ]}}});
+  app.run('globalThis.discovered = guideDatasets(body)');
+  assert.equal(app.run('discovered.length'), 1);
+  assert.equal(app.run('discovered[0].path'), 'School.class.students');
+  assert.equal(app.run('discovered[0].expand'), true);
+  assert.deepEqual([...app.run('discovered[0].fields.map(field => field.path)')], ['student.name','student.age']);
+});
+
+test('guided workflow compiles the nested School query into the existing filter language', () => {
+  const app = client();
+  app.run(`
+    guide.collectionPath = 'collections/school.json';
+    guide.items = [{
+      request:{name:'Get school',method:'GET'},
+      dataset:{path:'School.class.students',prefix:'School.class.students',expand:true},
+      fields:[{path:'student.name'},{path:'student.age'}],
+      selected:['student.name'],labels:{'student.name':'Student name'},
+      conditions:[{field:'student.age',op:'<',value:'13'}]
+    }];
+    guide.summary = {enabled:true,title:'Young students',description:'Students under 13',query:true,
+      mode:'values',valueField:'0:student.name',metric:false,status:true};
+    globalThis.definition = guideCompile();
+  `);
+  const definition = app.context.definition;
+  assert.match(definition, /COLLECTION "school";/);
+  assert.match(definition, /EXPAND "Get school" ON School\.class\.students;/);
+  assert.match(definition, /FILTER "Get school" WHERE School\.class\.students\.student\.age < 13;/);
+  assert.match(definition, /COLUMNS "Get school": School\.class\.students\.student\.name AS "Student name";/);
+  assert.match(definition, /TABLE \$QUERY_1 TITLE "Student name" COLUMNS School\.class\.students\.student\.name;/);
+  assert.match(definition, /STATUS;/);
+});
+
+test('guided workflow uses the report engine automatic row extraction for a top-level array', () => {
+  const app = client();
+  app.context.body = JSON.stringify({data:[{id:1,name:'Ada'}],errors:[{code:'E1'}]});
+  app.run('globalThis.discovered = guideDatasets(body)');
+  assert.equal(app.run('discovered[0].path'), 'data');
+  assert.equal(app.run('discovered[0].expand'), false);
+  assert.equal(app.run('discovered[0].prefix'), '');
+  assert.equal(app.run('discovered[1].supported'), false);
+});
+
+test('guided draft recovery stores structure without response bodies or request credentials', () => {
+  const app = client();
+  const storage = new Map();
+  app.context.localStorage = {setItem(key,value) { storage.set(key,value); }, getItem(key) { return storage.get(key) || null; }, removeItem(key) { storage.delete(key); }};
+  app.run(`
+    guide.collectionPath = 'collections/private.json';
+    guide.items = [{request:{index:2,name:'List students',method:'GET',headers:[{key:'Authorization',value:'secret'}]},
+      response:{body:'sensitive response'},dataset:{path:'students',prefix:'',expand:false},
+      fields:[{path:'name',type:'string',sample:'Asha'}],selected:['name'],labels:{},conditions:[]}];
+    guide.filename = 'students-under-13';
+    guidePersist();
+  `);
+  const raw = storage.get('report-studio.guided-draft');
+  assert.ok(raw.includes('students-under-13'));
+  assert.ok(!raw.includes('sensitive response'));
+  assert.ok(!raw.includes('Authorization'));
+  assert.ok(!raw.includes('secret'));
+});
+
+test('guided header control switches in both directions between Guided and IDE modes', async () => {
+  const app = client();
+  app.run("state.files = []; state.token = '';");
+  const toggle = app.elements.get('guided-toggle');
+  app.elements.get('guided-workspace').hidden = true;
+  toggle.handlers.click({});
+  await Promise.resolve();
+  assert.equal(app.elements.get('guided-workspace').hidden, false);
+  assert.ok(toggle.innerHTML.includes('IDE workspace'));
+  assert.equal(toggle.getAttribute('aria-pressed'), 'true');
+  toggle.handlers.click({});
+  assert.equal(app.elements.get('guided-workspace').hidden, true);
+  assert.ok(toggle.innerHTML.includes('Guided workspace'));
+  assert.equal(toggle.getAttribute('aria-pressed'), 'false');
 });

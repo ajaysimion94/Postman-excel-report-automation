@@ -80,8 +80,10 @@ class WebServerTest {
         var page = request("GET", "/", null);
         assertEquals(200, page.statusCode());
         assertTrue(page.body().contains("Report Studio"));
+        assertTrue(page.body().contains("Guided workspace"));
         assertTrue(page.headers().firstValue("Content-Security-Policy").orElseThrow().contains("frame-ancestors 'none'"));
         assertEquals(200, request("GET", "/app.js", null).statusCode());
+        assertEquals(200, request("GET", "/guided-workflow.js", null).statusCode());
         var filesResponse = request("GET", "/api/files", null);
         assertTrue(filesResponse.body().contains("collections/local.json"));
         assertEquals("no-store, max-age=0", filesResponse.headers().firstValue("Cache-Control").orElseThrow());
@@ -246,6 +248,22 @@ class WebServerTest {
         app.start(); base = "http://127.0.0.1:" + app.port();
         JsonNode history = json(request("GET", "/api/runs", null));
         assertEquals(started.path("id").asText(), history.get(0).path("id").asText());
+    }
+
+    @Test void acceptsAnOutputFilenamePatternAndRejectsPathsOutsideReports() throws Exception {
+        Map<String, String> report = new LinkedHashMap<>(reportBody());
+        report.put("outputFile", "daily-{collection}-{timestamp}.xlsx");
+        JsonNode started = json(request("POST", "/api/runs", report));
+        JsonNode finished = awaitRun(started.path("id").asText());
+
+        assertEquals("completed", finished.path("status").asText(), finished.toPrettyString());
+        assertTrue(finished.path("files").get(0).asText()
+                .matches("reports/daily-Local-test-collection-\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}\\.xlsx"));
+
+        report.put("outputFile", "../outside.xlsx");
+        var rejected = request("POST", "/api/runs", report);
+        assertEquals(400, rejected.statusCode());
+        assertTrue(rejected.body().contains("Reports folder"));
     }
 
     @Test void reportsFailuresWithoutLosingTheGeneratedReport() throws Exception {
