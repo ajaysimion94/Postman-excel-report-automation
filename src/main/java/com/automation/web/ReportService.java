@@ -390,6 +390,10 @@ final class ReportService implements AutoCloseable {
     }
 
     private Prepared prepare(String collectionName, String source, String filename, String collectionSource) throws IOException {
+        boolean inferredCollection = collectionName == null || collectionName.isBlank();
+        if (inferredCollection) {
+            collectionName = resolveSavedCollection(source, Path.of(filename == null ? "quick-run.filter" : filename), null);
+        }
         Path path = collectionPath(collectionName);
         PostmanCollection collection;
         try {
@@ -400,7 +404,8 @@ final class ReportService implements AutoCloseable {
                     + e.getLocation().getColumnNr() + " Invalid collection JSON: " + e.getOriginalMessage());
         }
         FilterSpec spec = source == null || source.isBlank() ? null : FilterQueryParser.parseSource(source,
-                Path.of(filename == null || filename.isBlank() ? "untitled.filter" : filename), path.getFileName().toString().replaceFirst("\\.json$", ""));
+                Path.of(filename == null || filename.isBlank() ? "untitled.filter" : filename),
+                inferredCollection ? null : path.getFileName().toString().replaceFirst("\\.json$", ""));
         if (spec != null) {
             FilterValidator.validate(spec, collection, path);
             if (spec.requests() != null && !spec.requests().isEmpty()) {

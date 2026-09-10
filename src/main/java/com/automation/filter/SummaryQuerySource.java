@@ -5,7 +5,10 @@ package com.automation.filter;
  */
 public sealed interface SummaryQuerySource permits SummaryQuerySource.FilterRows, SummaryQuerySource.NamedTable,
         SummaryQuerySource.UnionRows, SummaryQuerySource.SetOpRows, SummaryQuerySource.CompareRows,
-        SummaryQuerySource.DerivedFilter {
+        SummaryQuerySource.DerivedFilter, SummaryQuerySource.QuickRows {
+    /** An independent projection over a response, optionally emitted as a request sheet. */
+    record QuickRows(String requestKey, java.util.List<ColumnSpec> columns,
+                     RowFilterGroup filter, boolean standalone) implements SummaryQuerySource {}
     /** Rows from a request response with an optional filter (summary-only). */
     record FilterRows(String requestKey, RowFilterGroup filter) implements SummaryQuerySource {
     }

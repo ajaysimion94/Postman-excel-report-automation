@@ -48,18 +48,15 @@ async function guideOpen(action = 'home') {
   $('guided-toggle').innerHTML = '<span aria-hidden="true">⌘</span> IDE workspace';
   $('guided-toggle').setAttribute('aria-pressed','true');
   $('guided-toggle').title = 'Return to the IDE workspace';
-  document.body.classList.remove('guided-preview-open');
-  $('guided-preview-toggle').textContent = 'Preview';
-  $('guided-preview-toggle').setAttribute('aria-pressed','false');
   if (!state.files.length && state.token) await refreshFiles();
   guideReset(action);
   $('guided-title').focus();
 }
 
 function guideClose() {
+  quickAssistClose();
   $('guided-workspace').hidden = true;
   document.body.classList.remove('guided-open');
-  document.body.classList.remove('guided-preview-open');
   $('guided-toggle').innerHTML = '<span aria-hidden="true">✦</span> Guided workspace';
   $('guided-toggle').setAttribute('aria-pressed','false');
   $('guided-toggle').title = 'Open the guided workspace';
@@ -206,33 +203,6 @@ function guideRunView() {
     ${!running && run?.status !== 'completed' ? `<button type="button" class="outline-button" data-guide-action="run">Choose another filter</button>` : ''}`;
 }
 
-function guideRenderPreview() {
-  const preview = $('guided-preview-content');
-  if (guide.run) {
-    $('guided-preview-title').textContent = 'Execution';
-    $('guided-preview-state').textContent = guide.run.status || 'Starting';
-    preview.innerHTML = `<div class="guided-preview-empty"><span>▶</span><strong>${guideEscape(guide.run.collection || 'Collection')}</strong><p>${guide.run.total || 0} selected request${guide.run.total === 1 ? '' : 's'}</p></div>`;
-    return;
-  }
-  const source = guide.items.length ? guideCompile() : '';
-  if (source) {
-    $('guided-preview-title').textContent = 'Definition';
-    $('guided-preview-state').textContent = guide.savedSource === source ? 'Saved' : 'Unsaved draft';
-    preview.innerHTML = `<pre><code>${guideEscape(source)}</code></pre>`;
-    return;
-  }
-  const dataset = guide.current?.datasets?.[guide.current.datasetIndex];
-  if (dataset) {
-    $('guided-preview-title').textContent = dataset.path;
-    $('guided-preview-state').textContent = `${dataset.rows.length} sampled rows`;
-    const columns = dataset.fields.slice(0,6).map(field => field.path);
-    preview.innerHTML = `<div class="guided-preview-table-wrap"><table><thead><tr>${columns.map(column => `<th>${guideEscape(column)}</th>`).join('')}</tr></thead><tbody>${dataset.rows.slice(0,8).map(row => `<tr>${columns.map(column => `<td>${guideEscape(guideValue(row[column]))}</td>`).join('')}</tr>`).join('')}</tbody></table></div><p class="guided-preview-note">Preview from the latest request test. Saving the filter does not store this response.</p>`;
-    return;
-  }
-  $('guided-preview-title').textContent = 'Definition';
-  $('guided-preview-state').textContent = 'Waiting for input';
-  preview.innerHTML = `<div class="guided-preview-empty"><span>⌁</span><strong>Your work appears here</strong><p>Response data and generated filter source stay visible as you build.</p></div>`;
-}
 
 function guideRender() {
   const content = $('guided-content');
@@ -247,7 +217,6 @@ function guideRender() {
   else if (guide.step === 'run') content.innerHTML = guideRunStep();
   else if (guide.step === 'collection-action') content.innerHTML = guideCollectionAction();
   else if (guide.step === 'running') content.innerHTML = guideRunView();
-  guideRenderPreview();
   const active = guide.action === 'home' ? 'home' : guide.action;
   document.querySelectorAll('.guided-nav button').forEach(button => button.classList.toggle('active', button.dataset.guideAction === active));
 }
@@ -362,11 +331,11 @@ async function guideSelectCollection(path) {
   finally { guide.busy = false; guideRender(); }
 }
 
-function guideRequestPayload(request) {
-  return {collection:guide.collectionPath,index:request.index,method:request.method,url:request.url,
+function guideRequestPayload(request, collection = guide.collection, collectionPath = guide.collectionPath) {
+  return {collection:collectionPath,index:request.index,method:request.method,url:request.url,
     headers:(request.headers || []).filter(row => row.enabled !== false && row.key).map(({key,value}) => ({key,value})),
     body:request.body || '',bodyMode:request.bodyMode || 'none',bodyFields:request.bodyFields || [],auth:request.auth || {type:'noauth',values:{}},
-    variables:Object.fromEntries((guide.collection.variables || []).filter(row => row.enabled !== false && row.key).map(row => [String(row.key).replace(/^{{|}}$/g,''),String(row.value ?? '')]))};
+    variables:Object.fromEntries((collection.variables || []).filter(row => row.enabled !== false && row.key).map(row => [String(row.key).replace(/^{{|}}$/g,''),String(row.value ?? '')]))};
 }
 
 async function guideInspect() {
@@ -504,15 +473,16 @@ function guideFilterVisible(input) {
 }
 
 function initializeGuided() {
+  initializeQuickAssist();
+  bind('guided-quick-form','submit',event => { event.preventDefault(); guideQuickRun(); });
+  bind('guided-quick-query','keydown',event => {
+    if (quickAssistKey(event)) return;
+    if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); guideQuickRun(); }
+  });
+  bind('guided-quick-editor','click',guideQuickEditor);
   bind('guided-toggle','click',() => $('guided-workspace').hidden ? guideOpen() : guideClose());
   bind('guided-close','click',guideClose);
   bind('guided-restart','click',() => { try { localStorage.removeItem('report-studio.guided-draft'); } catch {} guideReset('home'); });
-  bind('guided-preview-toggle','click',() => {
-    const open = !document.body.classList.contains('guided-preview-open');
-    document.body.classList.toggle('guided-preview-open',open);
-    $('guided-preview-toggle').textContent = open ? 'Build' : 'Preview';
-    $('guided-preview-toggle').setAttribute('aria-pressed',String(open));
-  });
   $('guided-workspace').addEventListener('click',event => {
     const target = event.target.closest('button,a');
     if (!target) return;
@@ -549,7 +519,7 @@ function initializeGuided() {
     else if ('guideField' in target.dataset) { guide.current.selected = target.checked ? [...new Set([...guide.current.selected,target.dataset.guideField])] : guide.current.selected.filter(field => field !== target.dataset.guideField); guideRender(); }
     else if ('guideLabel' in target.dataset) guide.current.labels[target.dataset.guideLabel] = target.value;
     else if ('guideConditionValue' in target.dataset) guide.current.conditions[Number(target.dataset.guideConditionValue)].value = target.value;
-    else if ('guideSummary' in target.dataset) { guide.summary[target.dataset.guideSummary] = target.value; guidePersist(); guideRenderPreview(); }
+    else if ('guideSummary' in target.dataset) { guide.summary[target.dataset.guideSummary] = target.value; guidePersist(); }
     else if ('guideFilename' in target.dataset) { guide.filename = target.value; guidePersist(); }
     else if ('guideReportSearch' in target.dataset) { guide.reportSearch = target.value; guideRender(); const input = document.querySelector('[data-guide-report-search]'); if (input) { input.focus(); input.setSelectionRange(input.value.length,input.value.length); } }
     else if ('guideListSearch' in target.dataset) guideFilterVisible(target);
@@ -562,6 +532,41 @@ function initializeGuided() {
     else if ('guideSummary' in target.dataset) { guide.summary[target.dataset.guideSummary] = target.value; guidePersist(); guideRender(); }
   });
   guideRender();
+}
+
+function guideQuickError(message = '') {
+  $('guided-quick-error').textContent = message;
+  $('guided-quick-error').hidden = !message;
+}
+
+async function guideQuickRun() {
+  if ($('guided-quick-run').disabled) return;
+  const source = $('guided-quick-query').value.trim();
+  if (!source) { guideQuickError('Enter a query to run.'); $('guided-quick-query').focus(); return; }
+  quickAssistClose();
+  guideQuickError();
+  $('guided-quick-run').disabled = true;
+  $('guided-quick-run').textContent = 'Starting…';
+  try {
+    // Let the shared parser resolve @collection, names, assignments and diagnostics.
+    const result = await api('/api/runs',{method:'POST',body:{source,filename:'quick-run.filter'}});
+    guide.run = result; guide.step = 'running'; guide.error = ''; guideRender(); guidePoll(result.id);
+  } catch (error) { guideQuickError(error.message); }
+  finally { $('guided-quick-run').disabled = false; $('guided-quick-run').textContent = 'Run query'; }
+}
+
+function guideQuickEditor() {
+  const source = $('guided-quick-query').value.trim();
+  if (!source) { guideQuickError('Enter a query to open in the IDE.'); return; }
+  let index = 1;
+  let path = 'filters/quick-run.filter';
+  while (state.documents.some(doc => doc.path === path) || state.files.some(file => file.path === path)) {
+    path = `filters/quick-run-${++index}.filter`;
+  }
+  const doc = {path,content:source + '\n',saved:'',revision:null};
+  state.documents.push(doc);
+  state.collection = '';
+  guideClose(); activate(doc); refreshOutline();
 }
 
 initializeGuided();

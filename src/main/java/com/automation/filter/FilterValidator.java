@@ -466,7 +466,12 @@ public final class FilterValidator {
                 if (query.variableName() == null || query.variableName().isBlank()) {
                     throw new IllegalArgumentException("Summary query variable name cannot be blank.");
                 }
-                if (query.source() instanceof SummaryQuerySource.FilterRows filterRows) {
+                if (query.source() instanceof SummaryQuerySource.QuickRows quick) {
+                    if (!available.contains(quick.requestKey())) {
+                        throw new IllegalArgumentException("Quick query references unknown request: " + quick.requestKey());
+                    }
+                    if (quick.filter() != null) validateRowFilterGroup(quick.filter(), "quick query");
+                } else if (query.source() instanceof SummaryQuerySource.FilterRows filterRows) {
                     if (filterRows.requestKey() == null || filterRows.requestKey().isBlank()) {
                         throw new IllegalArgumentException(
                                 "Summary query $" + query.variableName() + " is missing a request name.");

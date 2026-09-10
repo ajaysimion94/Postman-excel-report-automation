@@ -73,6 +73,11 @@ public final class FilterQueryParser {
     private static void parseStatement(TokenStream ts, ParseState state) {
         Builder b = state.current;
 
+        if (ts.matchSymbol("@")) {
+            parseQuickQuery(ts, state, null);
+            return;
+        }
+
         if (ts.matchKeyword("SET")) {
             ts.expectKeyword("OUTPUT_PREFIX");
             b.outputPrefix = ts.readValue();
@@ -307,7 +312,7 @@ public final class FilterQueryParser {
         }
 
         if (ts.matchSymbol("$")) {
-            parseSummaryDollarStatement(ts, b);
+            parseSummaryDollarStatement(ts, state);
             return;
         }
 
@@ -430,9 +435,31 @@ public final class FilterQueryParser {
         throw ts.error("Unknown statement. Supported: SET, COLLECTION, OUTPUT_PREFIX, REQUESTS, REQUEST, COLUMNS, FILTER, DATE_CONFIG, LOOKUP_TABLE, SHAPE, UNION, INTERSECT, EXCEPT, DIFF, COMPARE, EXPAND, TITLE, DESCRIPTION, TEXT, KV, LV, TABLE, LABEL_TABLE, QT, QUICK_TABLE, METRICS, STATUS, $var = FILTER|TABLE|UNION|INTERSECT|EXCEPT|DIFF|COMPARE ..., $var;");
     }
 
-    private static void parseSummaryDollarStatement(TokenStream ts, Builder b) {
+    private static void parseQuickQuery(TokenStream ts, ParseState state, String variable) {
+        state.switchCollection(ts.readValue());
+        Builder b = state.current;
+        ts.expectSymbol("#");
+        String request = ts.readValue();
+        ts.expectSymbol(">");
+        List<ColumnSpec> columns = parseColumnList(ts);
+        RowFilterGroup where = ts.matchKeyword("WHERE") ? compileWhere(parseExpr(ts), ts) : null;
+        boolean standalone = variable == null;
+        String name = standalone ? "@quick" + b.summaryQueries.size() : variable;
+        if (b.summaryQueries.containsKey(name)) throw ts.error("Duplicate summary variable: $" + name);
+        if (!b.requests.contains(request)) b.requests.add(request);
+        b.summaryQueries.put(name, new SummaryQuerySpec(name,
+                new SummaryQuerySource.QuickRows(request, columns, where, standalone)));
+        if (standalone) b.summaryItems.add(new SummaryItem.Table(name, request, null));
+    }
+
+    private static void parseSummaryDollarStatement(TokenStream ts, ParseState state) {
+        Builder b = state.current;
         String varName = ts.readIdentifierLike();
         if (ts.matchSymbol("=")) {
+            if (ts.matchSymbol("@")) {
+                parseQuickQuery(ts, state, varName);
+                return;
+            }
             if (b.summaryQueries.containsKey(varName)) {
                 throw ts.error("Duplicate summary variable: $" + varName);
             }
@@ -948,8 +975,15 @@ public final class FilterQueryParser {
         private FilterSpec build() {
             SummarySpec summary = null;
             if (!summaryItems.isEmpty() || !summaryQueries.isEmpty()) {
+                List<SummaryItem> items = summaryItems;
+                if (items.isEmpty()) {
+                    items = summaryQueries.values().stream()
+                            .filter(query -> query.source() instanceof SummaryQuerySource.QuickRows)
+                            .map(query -> (SummaryItem) new SummaryItem.Table(query.variableName(), query.variableName(), null))
+                            .toList();
+                }
                 summary = new SummarySpec(
-                        summaryItems.isEmpty() ? List.of() : List.copyOf(summaryItems),
+                        List.copyOf(items),
                         summaryQueries.isEmpty() ? Map.of() : Map.copyOf(summaryQueries));
             }
             return new FilterSpec(
@@ -1112,7 +1146,7 @@ public final class FilterQueryParser {
     }
 
     private static final class TokenStream {
-        private static final Set<String> SYMBOLS = Set.of(";", ",", ":", "(", ")", "=", "!=", ">", ">=", "<", "<=", "+", "$");
+        private static final Set<String> SYMBOLS = Set.of(";", ",", ":", "(", ")", "=", "!=", ">", ">=", "<", "<=", "+", "$", "@", "#");
 
         private final List<Token> tokens;
         private final Path source;
@@ -1268,7 +1302,12 @@ public final class FilterQueryParser {
                     }
                     continue;
                 }
-                if (ch == '#') {
+                // A hash introduces a request only immediately after @collection.
+                // Everywhere else it retains the existing line-comment meaning.
+                boolean requestMarker = out.size() >= 2
+                        && out.get(out.size() - 2).type == TokenType.SYMBOL
+                        && out.get(out.size() - 2).text.equals("@");
+                if (ch == '#' && !requestMarker) {
                     while (i < input.length() && input.charAt(i) != '\n') {
                         i++;
                     }

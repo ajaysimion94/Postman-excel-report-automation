@@ -2,6 +2,29 @@
 
 This guide documents the current `.filter` language implemented by the parser, validator, and Excel generator in this project. Use it as the reference for supported keywords, valid combinations, scope rules, and practical examples.
 
+## Quick queries
+
+The same shorthand works in `.filter` files, the IDE, and the Guided workspace's Quick run box:
+
+```sql
+@collection #request > column1, column2 where "column n" > 7;
+@collection #studentsinfo > name, age where School.class.students.student.age < 13;
+
+$students = @collection #studentsinfo > name, age where School.class.students.student.age < 13;
+SUMMARY {
+  TABLE $students TITLE "Students under 13";
+  METRIC "Student count" = $students;
+}
+```
+
+Use the collection filename without `.json`, and the exact request name. Quote names containing spaces, for example `@"School API" #"Get students" > name AS "Student name", age;`. `WHERE` is optional; statements end with a semicolon. Existing `#` and `--` comments still work.
+
+A standalone query produces a projected request worksheet and a summary table. Assignments keep independent row sets, so two variables can select different columns and conditions from the same response. Use `TABLE $students`, `$students;`, or a metric to display a variable; a file containing only quick assignments displays their tables automatically. Assignment-only queries leave the regular response worksheets available.
+
+The deepest qualified field parent selects the row object. Arrays along that path are traversed per item, so `name` and `age` refer to the same student. Without a qualified path, rows come from the response array or its first top-level object array. Use full paths to disambiguate fields. `WHERE` can use the existing comparisons, parentheses, and `AND`/`OR` conditions.
+
+Each run targets one collection, following the existing collection-block selection rules. For multiple collections in one file, select the collection in the IDE or CLI. Guided Quick run requires an unambiguous collection.
+
 ## Quick Start
 
 ```sql

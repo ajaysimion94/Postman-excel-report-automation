@@ -178,7 +178,7 @@ public final class WebServer implements AutoCloseable {
             }
             case "POST /api/validate", "POST /api/runs" -> {
                 JsonNode body = body(exchange);
-                String collection = required(body, "collection");
+                String collection = body.path("collection").asText("");
                 String source = required(body, "source");
                 String filename = body.path("filename").asText("untitled.filter");
                 String collectionSource = body.path("collectionSource").isTextual() ? body.get("collectionSource").asText() : null;
@@ -220,6 +220,7 @@ public final class WebServer implements AutoCloseable {
             case "/", "/index.html" -> "index.html";
             case "/app.js" -> "app.js";
             case "/guided-workflow.js" -> "guided-workflow.js";
+            case "/quick-query-assist.js" -> "quick-query-assist.js";
             case "/styles.css" -> "styles.css";
             default -> throw new WebException(404, "Page not found.");
         };

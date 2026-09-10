@@ -84,6 +84,7 @@ class WebServerTest {
         assertTrue(page.headers().firstValue("Content-Security-Policy").orElseThrow().contains("frame-ancestors 'none'"));
         assertEquals(200, request("GET", "/app.js", null).statusCode());
         assertEquals(200, request("GET", "/guided-workflow.js", null).statusCode());
+        assertEquals(200, request("GET", "/quick-query-assist.js", null).statusCode());
         var filesResponse = request("GET", "/api/files", null);
         assertTrue(filesResponse.body().contains("collections/local.json"));
         assertEquals("no-store, max-age=0", filesResponse.headers().firstValue("Cache-Control").orElseThrow());
@@ -274,6 +275,20 @@ class WebServerTest {
         assertTrue(finished.path("summary").asText().contains("1 request needs attention."));
         assertEquals(503, finished.path("requests").get(0).path("statusCode").asInt());
         assertEquals(1, finished.path("files").size());
+    }
+
+    @Test void runsQuickSourceWithoutACollectionDropdownAndRejectsBadQueriesBeforeExecution() throws Exception {
+        var valid = request("POST", "/api/validate", Map.of("source", "@\"Local test collection\" #\"List items\" > title where id > 1;"));
+        assertEquals(200, valid.statusCode(), valid.body());
+        assertEquals(0, hits.get());
+        var invalid = request("POST", "/api/runs", Map.of("source", "@local #\"List items\" > title where id > ;"));
+        assertEquals(400, invalid.statusCode(), invalid.body());
+        assertEquals(0, hits.get());
+        JsonNode started = json(request("POST", "/api/runs", Map.of("source",
+                "$items = @local #\"List items\" > title where id > 1;", "filename", "quick-run.filter")));
+        JsonNode finished = awaitRun(started.path("id").asText());
+        assertEquals("completed", finished.path("status").asText(), finished.toPrettyString());
+        assertEquals(1, hits.get());
     }
 
     @Test void runsASavedFilterWithoutSendingItsSourceFromTheEditor() throws Exception {

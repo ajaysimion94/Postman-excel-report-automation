@@ -4,6 +4,26 @@ Report Studio brings this project's existing Postman execution and Excel reporti
 engine into a local browser workspace. It runs from the same Java application as the
 CLI and needs no Node.js installation, database, CDN, or frontend build step.
 
+## Quick run in Guided mode
+
+Enter a query in the single-line Quick run search bar, then click **Run query** or press **Enter**:
+
+```sql
+@reqres #"List users page 1" > first_name, email where id > 2;
+$students = @school #studentsinfo > name, age where School.class.students.student.age < 13;
+```
+
+The collection is resolved from `@name`; no dropdown selection or saved filter is required. Results use the normal report progress, workbook preview, and Excel download. Errors appear below the box without clearing your query. **Open in IDE** copies the query into a new unsaved filter tab for editing and saving. See the [quick query reference](FILTER_GUIDE.md#quick-queries) for nested paths and variables.
+
+Quick run also provides inline suggestions:
+
+- Type `@` to list collections. Select one, then use `#` to choose one of its requests. Names with spaces are quoted automatically.
+- After `>`, the selected API request is sent with its saved settings. A checklist shows discovered scalar columns with their types and sample values. Select fields and click **Use columns**; existing variable assignments, aliases, and `WHERE` conditions are preserved.
+- Browse object and array paths in the checklist, or type `School.class…` in its field search. After `WHERE`, typing a path offers matching objects and fields; selecting an object continues down its path.
+- Arrow keys browse suggestions, Enter selects, and Escape closes the dropdown. Enter runs the query when suggestions are closed.
+
+Inspection responses are reused in memory while editing. **Test again** reloads the saved request settings and sends a new inspection request. Large responses are sampled (up to 100 items per array, 1,000 paths, and 24 levels), and the picker indicates when discovery is limited. Empty or non-JSON responses cannot provide a scalar column checklist; inspect those in the API client. Generating the report executes the query's request again with current data.
+
 ## Start the application
 
 From the project directory:
@@ -38,14 +58,14 @@ saved filter, add a collection, open a request in the API client, or build a new
 filter from a live response.
 
 For a new filter, choose a collection and request, run the request once to discover
-its datasets, then select output columns and optional row conditions. The live
-preview shows both sampled data and the generated `.filter` definition. You can add
+its datasets, then select output columns and optional row conditions. Field samples
+appear in the column picker. You can add
 more requests from the same collection, configure the Summary worksheet, save the
 definition, and generate the Excel report. **Open draft in editor** moves the
 generated source into the full editor for advanced changes.
 
 Nested JSON arrays are shown as named datasets. A selected nested dataset compiles to
-the existing `EXPAND` syntax when the report engine requires it, so preview and Excel
+the existing `EXPAND` syntax when the report engine requires it, so field selection and Excel
 output use the same row scope. Conditions may use a field even when that field is not
 selected as an output column.
 

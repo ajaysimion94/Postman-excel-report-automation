@@ -40,6 +40,7 @@ function client() {
     getComputedStyle() { return {lineHeight: '22px'}; }
   });
   const source = fs.readFileSync(path.join(directory, 'app.js'), 'utf8').replace(/\ninitialize\(\);\s*$/, '\n')
+    + '\n' + fs.readFileSync(path.join(directory, 'quick-query-assist.js'), 'utf8')
     + '\n' + fs.readFileSync(path.join(directory, 'guided-workflow.js'), 'utf8');
   vm.runInContext(source, context);
   return {context, elements, run: code => vm.runInContext(code, context)};
@@ -505,6 +506,147 @@ test('guided draft recovery stores structure without response bodies or request 
   assert.ok(!raw.includes('sensitive response'));
   assert.ok(!raw.includes('Authorization'));
   assert.ok(!raw.includes('secret'));
+});
+
+test('quick suggestions understand quoted selectors, assignments, cursor position and WHERE operators', () => {
+  const app = client();
+  assert.equal(app.run("quickContext('@').stage"), 'collection');
+  assert.equal(app.run(`quickContext('$students = @"School API" #').stage`), 'request');
+  assert.equal(app.run(`quickContext('@school #"Student > info" > ').stage`), 'columns');
+  assert.equal(app.run(`quickContext('@school #students > name where School.class.').stage`), 'path');
+  assert.equal(app.run(`quickContext('@school #students > name where age > 7')`), null);
+  assert.equal(app.run(`quickContext('@school #students > name where name = "School.class"')`), null);
+  assert.equal(app.run(`quickContext('@school #students > name; @').stage`), 'collection');
+  assert.equal(app.run(`quickContext('@school #students > name where age < 13;', 2).stage`), 'collection');
+});
+
+test('schema discovery walks nested arrays and includes fields found in later response rows', () => {
+  const app = client();
+  app.run(`globalThis.schema = quickSchema(JSON.stringify({School:{class:[{students:[{student:{name:'Asha',age:12}},{student:{name:'Ben',age:14,grade:'A'}}]}]}}));`);
+  assert.equal(app.run("schema.fields.find(field => field.path === 'School.class').type"), 'array');
+  assert.equal(app.run("schema.fields.find(field => field.path === 'School.class.students.student').branch"), true);
+  assert.equal(app.run("schema.fields.find(field => field.path === 'School.class.students.student.grade').sample"), 'A');
+  assert.equal(app.run('schema.limited'), false);
+});
+
+test('collection completion inserts quoted names and opens request suggestions', async () => {
+  const app = client();
+  app.run(`state.files = [{path:'collections/School API.json'}]; api = async () => ({requests:[],variables:{}});`);
+  const input = app.elements.get('guided-quick-query');
+  input.value = '@'; input.selectionStart = 1;
+  await app.run('quickAssistUpdate()');
+  assert.equal(app.run('quickAssist.options[0].value'), 'School API');
+  app.run('quickAssistPick(0)');
+  assert.equal(input.value, '@"School API" #');
+  await app.run('quickAssistUpdate()');
+  assert.equal(app.run('quickAssist.context.stage'), 'request');
+  assert.ok(app.elements.get('guided-quick-suggestions').innerHTML.includes('Choose a request'));
+});
+
+test('column discovery reuses an API test while typing and retries only when requested', async () => {
+  const app = client();
+  app.run(`
+    state.files = [{path:'collections/school.json'}]; globalThis.calls = [];
+    api = async (path, options) => { calls.push({path,body:options?.body}); return path === '/api/request'
+      ? {success:true,statusCode:200,body:'{"School":{"class":{"students":[{"student":{"name":"Asha","age":12}}]}}}'}
+      : {requests:[{index:0,name:'Students',method:'GET',url:'https://example.test',headers:[],auth:{type:'bearer',values:{token:'saved-token'}}}],variables:{region:'local'}}; };
+  `);
+  const input = app.elements.get('guided-quick-query');
+  input.value = '@school #Students > '; input.selectionStart = input.value.length;
+  await app.run('quickAssistUpdate()');
+  assert.equal(app.run('quickAssist.panel'), 'columns');
+  assert.ok(app.elements.get('guided-quick-suggestions').innerHTML.includes('data-quick-column="School.class.students.student.age"'));
+  input.value += 'School.'; input.selectionStart = input.value.length;
+  await app.run('quickAssistUpdate()');
+  assert.equal(app.run('quickAssist.selected.size'), 0, 'an unfinished path must not become a selected column');
+  assert.equal(app.run("calls.filter(call => call.path === '/api/request').length"), 1);
+  assert.equal(app.run("calls.find(call => call.path === '/api/request').body.auth.values.token"), 'saved-token');
+  assert.equal(app.run("calls.find(call => call.path === '/api/request').body.variables.region"), 'local');
+  await app.run('quickAssistUpdate(true)');
+  assert.equal(app.run("calls.filter(call => call.path === '/api/request').length"), 2);
+});
+
+test('column checklist preserves assignment, aliases and conditions when it replaces a projection', () => {
+  const app = client();
+  const input = app.elements.get('guided-quick-query');
+  input.value = '$students = @school #Students > name AS "Student" where School.class.students.student.age < 13;';
+  input.selectionStart = input.value.indexOf(' where');
+  app.run(`quickAssist.context = quickContext($('guided-quick-query').value,$('guided-quick-query').selectionStart); quickAssist.selected = new Set(['name','age']); quickAssistApply();`);
+  assert.equal(input.value, '$students = @school #Students > name AS "Student", age where School.class.students.student.age < 13;');
+  assert.equal(app.elements.get('guided-quick-suggestions').hidden, true);
+});
+
+test('late inspection responses do not replace suggestions for a newly selected collection', async () => {
+  const app = client();
+  app.run(`
+    state.files = [{path:'collections/school.json'},{path:'collections/other.json'}];
+    globalThis.started = new Promise(resolve => { globalThis.markStarted = resolve; });
+    api = async path => path === '/api/request' ? new Promise(resolve => { globalThis.release = resolve; markStarted(); })
+      : {requests:[{index:0,name:'Students',method:'GET',url:'https://example.test'}],variables:{}};
+  `);
+  await app.run("quickLoadCollection('collections/school.json')");
+  const input = app.elements.get('guided-quick-query');
+  input.value = '@school #Students > '; input.selectionStart = input.value.length;
+  const pending = app.run('quickAssistUpdate()');
+  await app.run('started');
+  input.value = '@other'; input.selectionStart = input.value.length;
+  await app.run('quickAssistUpdate()');
+  app.run(`release({success:true,statusCode:200,body:'[{"name":"Asha"}]'});`);
+  await pending;
+  assert.equal(app.run('quickAssist.context.stage'), 'collection');
+  assert.equal(app.run('quickAssist.options[0].value'), 'other');
+  assert.ok(!app.elements.get('guided-quick-suggestions').innerHTML.includes('Select response columns'));
+});
+
+test('failed inspection is shown without repeated automatic requests and nested path suggestions insert the right path', async () => {
+  const app = client();
+  app.run(`
+    state.files = [{path:'collections/school.json'}]; globalThis.tests = 0;
+    api = async path => path === '/api/request' ? (tests++, {success:false,statusCode:503})
+      : {requests:[{index:0,name:'Students',method:'GET',url:'https://example.test'}],variables:{}};
+  `);
+  const input = app.elements.get('guided-quick-query');
+  input.value = '@school #Students > '; input.selectionStart = input.value.length;
+  await app.run('quickAssistUpdate()'); await app.run('quickAssistUpdate()');
+  assert.equal(app.run('tests'), 1);
+  assert.ok(app.elements.get('guided-quick-suggestions').innerHTML.includes('HTTP 503'));
+  assert.equal(app.run('quickAssist.panel'), 'message');
+  app.run(`quickAssist.schemas.clear(); api = async () => ({success:true,statusCode:200,body:'{"School":{"class":{"students":[{"student":{"age":12,"name":"Asha"}}]}}}'});`);
+  input.value = '@school #Students > name where School.class.students.student.a'; input.selectionStart = input.value.length;
+  await app.run('quickAssistUpdate()');
+  assert.equal(app.run('quickAssist.options[0].value'), 'School.class.students.student.age');
+  app.run('quickAssistPick(0)');
+  assert.equal(input.value, '@school #Students > name where School.class.students.student.age ');
+});
+
+test('quick run uses the shared endpoint and keeps query text when validation fails', async () => {
+  const app = client();
+  app.elements.get('guided-quick-query').value = '@school #studentsinfo > name, age where age < 13;';
+  await app.run(`
+    globalThis.calls = [];
+    api = async (path, options) => { calls.push({path,body:options.body}); throw new Error('Unknown collection school'); };
+    guideQuickRun();
+  `);
+  assert.equal(app.run('calls[0].path'), '/api/runs');
+  assert.equal(app.run('calls[0].body.collection'), undefined);
+  assert.ok(app.run('calls[0].body.source').includes('#studentsinfo'));
+  assert.equal(app.elements.get('guided-quick-error').textContent, 'Unknown collection school');
+  assert.equal(app.elements.get('guided-quick-run').disabled, false);
+  assert.ok(app.elements.get('guided-quick-query').value.includes('age < 13'));
+});
+
+test('quick query opens a separate unsaved IDE buffer that can validate without a collection dropdown', async () => {
+  const app = client();
+  app.elements.get('guided-quick-query').value = '@school #studentsinfo > name;';
+  app.run("state.documents = [{path:'filters/quick-run.filter',content:'original'}]; guideQuickEditor();");
+  assert.equal(app.run('state.documents[0].content'), 'original');
+  assert.equal(app.run('activeDocument().content'), '@school #studentsinfo > name;\n');
+  assert.equal(app.elements.get('validate-report').disabled, false);
+  await app.run(`api = async (path, options) => { globalThis.sent = options.body; return {message:'Valid',requests:1,summaryBlocks:1}; }; validateOrRun(false);`);
+  assert.equal(app.run('sent.collection'), '');
+  const html = app.run("highlight('@school #studentsinfo > name where age < 13; # comment')");
+  assert.ok(html.includes('syntax-keyword">where'));
+  assert.ok(html.includes('syntax-comment"># comment'));
 });
 
 test('guided header control switches in both directions between Guided and IDE modes', async () => {

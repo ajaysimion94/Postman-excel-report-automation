@@ -33,6 +33,39 @@ import static org.junit.jupiter.api.Assertions.*;
 class ExcelReportGeneratorTest {
 
     @Test
+    void quickQueriesProduceProjectedSheetsAndIndependentSummaryVariables() throws Exception {
+        Path output = Files.createTempFile("report-quick-school", ".xlsx");
+        FilterSpec spec = FilterQueryParser.parseSource("""
+                @school #studentsinfo > name, age where School.class.students.student.age < 13;
+                $older = @school #studentsinfo > name where School.class.students.student.age >= 13;
+                SUMMARY { TABLE $older TITLE "Older students"; }
+                """, Path.of("quick.filter"), null);
+        String body = """
+                {"School":{"class":{"students":[
+                  {"student":{"name":"Asha","age":12}},
+                  {"student":{"name":"Ben","age":14}},
+                  {"student":{"name":"Mina","age":11}}
+                ]}}}
+                """;
+        var results = List.of(new ExecutionResult("Root", "studentsinfo", "GET", "https://example.test",
+                200, 8, true, "", body, body, Instant.now(), List.of()));
+        new ExcelReportGenerator().generate(new PostmanCollection("school", Map.of(), List.of()), results,
+                new RuntimeConfig(output, null, output, true, Map.of(), spec), new RequestExecutor());
+        try (var input = Files.newInputStream(output); var workbook = new XSSFWorkbook(input)) {
+            var sheet = workbook.getSheet("studentsinfo");
+            assertNotNull(sheet);
+            StringBuilder text = new StringBuilder();
+            sheet.forEach(row -> row.forEach(cell -> text.append(cell.toString()).append('\n')));
+            assertTrue(text.toString().contains("Asha"));
+            assertTrue(text.toString().contains("Mina"));
+            assertFalse(text.toString().contains("Ben"));
+            StringBuilder summary = new StringBuilder();
+            workbook.getSheet("Summary").forEach(row -> row.forEach(cell -> summary.append(cell.toString()).append('\n')));
+            assertTrue(summary.toString().contains("Ben"));
+        }
+    }
+
+    @Test
     void guidedNestedDatasetDefinitionFiltersNamesWithinTheSameStudentRow() throws Exception {
         Path output = Files.createTempFile("report-guided-school", ".xlsx");
         FilterSpec spec = FilterQueryParser.parseSource("""

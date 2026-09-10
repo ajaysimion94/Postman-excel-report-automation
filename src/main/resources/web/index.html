@@ -9,6 +9,7 @@
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/styles.css">
   <script src="/app.js" defer></script>
+  <script src="/quick-query-assist.js" defer></script>
   <script src="/guided-workflow.js" defer></script>
 </head>
 <body>
@@ -87,14 +88,24 @@
     <main class="guided-conversation">
       <header class="guided-topbar">
         <div><span id="guided-kicker">NEW TASK</span><h1 id="guided-title" tabindex="-1">What are you working on?</h1></div>
-        <div class="guided-top-actions"><button id="guided-preview-toggle" type="button" class="quiet-button" aria-pressed="false">Preview</button><button id="guided-restart" type="button" class="quiet-button">Start over</button><button id="guided-close" type="button" class="icon-button" aria-label="Close guided workspace">×</button></div>
+        <div class="guided-top-actions"><button id="guided-restart" type="button" class="quiet-button">Start over</button><button id="guided-close" type="button" class="icon-button" aria-label="Close guided workspace">×</button></div>
       </header>
+      <form id="guided-quick-form" class="guided-quick-form">
+        <label for="guided-quick-query">Quick run</label>
+        <div class="guided-quick-controls">
+          <div class="guided-query-search">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg>
+            <input id="guided-quick-query" type="search" role="combobox" aria-haspopup="dialog" aria-expanded="false" aria-controls="guided-quick-suggestions" spellcheck="false" autocomplete="off" placeholder="@collection #request > name, age where age < 13;" aria-describedby="guided-quick-help">
+          </div>
+          <button id="guided-quick-run" class="primary-button" type="submit">Run query</button>
+          <button id="guided-quick-editor" class="outline-button" type="button">Open in IDE</button>
+        </div>
+        <div id="guided-quick-suggestions" class="quick-suggestions" role="dialog" aria-label="Query suggestions" hidden></div>
+        <small id="guided-quick-help">@ collections · # requests · &gt; tests the API and opens a column checklist · Type a nested path after WHERE for suggestions. Enter runs the query; Escape closes suggestions.</small>
+        <div id="guided-quick-error" class="guided-error" role="alert" hidden></div>
+      </form>
       <div id="guided-content" class="guided-content" aria-live="polite"></div>
     </main>
-    <aside class="guided-preview" aria-label="Live preview">
-      <div class="guided-preview-heading"><div><span>LIVE PREVIEW</span><strong id="guided-preview-title">Definition</strong></div><span id="guided-preview-state">Waiting for input</span></div>
-      <div id="guided-preview-content" class="guided-preview-content"></div>
-    </aside>
   </section>
 
   <footer class="statusbar"><span id="status-message" role="status" aria-live="polite">Ready</span><span>Report language · v1 compatible</span></footer>
@@ -153,6 +164,10 @@ SUMMARY {
         <section id="help-select" class="help-section" data-help-section data-help-terms="collection output prefix requests request selection execution">
           <div class="help-section-heading"><span>02</span><div><h3>Select what runs</h3><p>Choose the collection, requests, and output filename.</p></div></div>
           <div class="help-reference-grid">
+            <article><h4>Quick query · @collection #request</h4><p>Run directly in Guided mode or a filter file. Quote names with spaces. Assign independent results to a variable for summaries and metrics.</p><pre>@reqres #"List users page 1" &gt; first_name, email where id &gt; 2;
+$students = @school #studentsinfo &gt; name, age
+  where School.class.students.student.age &lt; 13;
+TABLE $students TITLE "Students under 13";</pre></article>
             <article><h4>COLLECTION</h4><p>Targets one Postman collection. The name must match its filename or collection name.</p><pre>COLLECTION reqres;</pre></article>
             <article><h4>REQUESTS / REQUEST</h4><p>Select several requests or add one request. Without either statement, every request runs.</p><pre>REQUESTS "List users", "Get user";
 REQUEST "List users";

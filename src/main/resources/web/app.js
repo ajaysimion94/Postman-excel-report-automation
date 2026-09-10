@@ -162,10 +162,11 @@ async function openSourceFile(path) {
     state.collection = path; $('collection-select').value = path;
     await refreshOutline();
   } else {
-    const match = doc.content.match(/^\s*COLLECTION\s+(?:"([^"]+)"|'([^']+)'|([^;\s]+))\s*;/mi);
+    const match = doc.content.match(/^\s*(?:COLLECTION\s+|(?:\$\w+\s*=\s*)?@)(?:"([^"]+)"|'([^']+)'|([^;\s]+))/mi);
     const name = match && (match[1] || match[2] || match[3]);
     const matches = name ? state.files.filter(file => file.path.startsWith('collections/') && !file.directory && basename(file.path).replace(/\.json$/, '') === name) : [];
     if (matches.length === 1) { state.collection = matches[0].path; $('collection-select').value = state.collection; await refreshOutline(); }
+    else if (match) { state.collection = ''; $('collection-select').value = ''; updateControls(); }
   }
 }
 
@@ -214,9 +215,9 @@ function renderDocumentTabs() {
 function updateControls() {
   const doc = activeDocument();
   const filter = doc?.path.endsWith('.filter');
-  $('run-report').disabled = state.busy || Boolean(state.activeRun) || !state.collection || !doc;
+  $('run-report').disabled = state.busy || Boolean(state.activeRun) || (!state.collection && !filter) || !doc;
   $('run-report').innerHTML = state.activeRun ? '◌ Running…' : '<span aria-hidden="true">▶</span> Run report';
-  $('validate-report').disabled = state.busy || !state.collection || !doc;
+  $('validate-report').disabled = state.busy || (!state.collection && !filter) || !doc;
   $('save-file').disabled = !doc || !isDirty(doc) && doc.revision !== null;
   $('insert-summary').disabled = !filter;
   $('export-report').disabled = !state.reportPath;
@@ -253,7 +254,7 @@ function renderEditor() {
 }
 
 function highlight(source) {
-  const pattern = /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|(#[^\n]*|--[^\n]*)|(\$[\w]+)|\b(COLLECTION|REQUESTS?|FILTER|WHERE|COLUMNS|AS|SUMMARY|TITLE|DESCRIPTION|PARAGRAPH|METRIC|FIELD|METRICS|STATUS|TABLE|LOOKUP_TABLE|LABEL_TABLE|QUICK_TABLE|QT|KV|LV|TEXT|COLOR|IF|THEN|ELSE|AND|OR|NOT|IS|TRUE|FALSE|NULL|SHAPE|ORDER|BY|LIMIT|OFFSET|GROUP|AGG|HAVING|DISTINCT|UNION|ALL|FROM|INTERSECT|EXCEPT|DIFF|COMPARE|ON|EXPAND|DATE_CONFIG|FORMAT|TIMEZONE|IN|LIKE|ILIKE|BETWEEN|SET|OUTPUT_PREFIX|HEADERS|ROW)\b|\b\d+(?:\.\d+)?\b/gim;
+  const pattern = /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|(#[^\n]*|--[^\n]*)|(\$[\w]+|@(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[\w.-]+)\s+#(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[\w.-]+))|\b(COLLECTION|REQUESTS?|FILTER|WHERE|COLUMNS|AS|SUMMARY|TITLE|DESCRIPTION|PARAGRAPH|METRIC|FIELD|METRICS|STATUS|TABLE|LOOKUP_TABLE|LABEL_TABLE|QUICK_TABLE|QT|KV|LV|TEXT|COLOR|IF|THEN|ELSE|AND|OR|NOT|IS|TRUE|FALSE|NULL|SHAPE|ORDER|BY|LIMIT|OFFSET|GROUP|AGG|HAVING|DISTINCT|UNION|ALL|FROM|INTERSECT|EXCEPT|DIFF|COMPARE|ON|EXPAND|DATE_CONFIG|FORMAT|TIMEZONE|IN|LIKE|ILIKE|BETWEEN|SET|OUTPUT_PREFIX|HEADERS|ROW)\b|\b\d+(?:\.\d+)?\b/gim;
   let last = 0, html = '';
   for (const match of source.matchAll(pattern)) {
     html += escapeHtml(source.slice(last, match.index));
@@ -412,7 +413,7 @@ async function reloadSelection() {
 
 async function validateOrRun(execute) {
   const doc = activeDocument();
-  if (!doc || !state.collection || state.busy || execute && state.activeRun) return;
+  if (!doc || (!state.collection && !doc.path.endsWith('.filter')) || state.busy || execute && state.activeRun) return;
   state.busy = true; updateControls();
   try {
     const body = {collection:state.collection, source:doc.path.endsWith('.filter') ? doc.content : '', filename:doc.path.endsWith('.filter') ? doc.path : ''};

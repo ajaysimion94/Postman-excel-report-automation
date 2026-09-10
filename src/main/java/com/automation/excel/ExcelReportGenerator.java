@@ -13,6 +13,7 @@ import com.automation.filter.DataShapeSpec;
 import com.automation.filter.DateFieldConfig;
 import com.automation.filter.ExpandSpec;
 import com.automation.filter.FilterSpec;
+import com.automation.filter.QuickQueryEvaluator;
 import com.automation.filter.RowConditionEvaluator;
 import com.automation.filter.RowFilterGroup;
 import com.automation.filter.SortSpec;
@@ -76,6 +77,7 @@ public final class ExcelReportGenerator {
 
     /** Runtime variable map ({@code $name} references in WHERE values resolve against this). */
     private Map<String, String> runtimeVars = Map.of();
+    private final Map<String, JsonNode> quickResponses = new LinkedHashMap<>();
 
     /** Pre-computed data for a single response-data sheet. */
     private record SheetPayload(String requestName, String baseSheetName,
@@ -84,6 +86,15 @@ public final class ExcelReportGenerator {
     public List<Path> generate(PostmanCollection collection, List<ExecutionResult> results,
                                RuntimeConfig config, RequestExecutor executor) throws IOException {
         this.runtimeVars = effectiveVars(config);
+        quickResponses.clear();
+        if (config.filterSpec() != null && config.filterSpec().summary() != null) {
+            ObjectMapper mapper = new ObjectMapper();
+            for (ExecutionResult result : results) {
+                if (result.responseBody() == null || result.responseBody().isBlank()) continue;
+                try { quickResponses.put(result.requestName(), mapper.readTree(result.responseBody())); }
+                catch (IOException ignored) { /* Non-JSON responses have no query rows. */ }
+            }
+        }
         Path outputPath = config.outputPath();
         if (outputPath.getParent() != null) {
             Files.createDirectories(outputPath.getParent());
@@ -170,6 +181,20 @@ public final class ExcelReportGenerator {
                 continue;
             }
 
+            List<SummaryQuerySource.QuickRows> quickQueries = filterSpec != null && filterSpec.summary() != null
+                    ? filterSpec.summary().queries().values().stream().map(SummaryQuerySpec::source)
+                    .filter(source -> source instanceof SummaryQuerySource.QuickRows quick
+                            && quick.standalone() && quick.requestKey().equals(result.requestName()))
+                    .map(source -> (SummaryQuerySource.QuickRows) source).toList() : List.of();
+            if (!quickQueries.isEmpty()) {
+                for (SummaryQuerySource.QuickRows query : quickQueries) {
+                    List<ObjectNode> queryRows = QuickQueryEvaluator.evaluate(root, query, runtimeVars);
+                    String name = uniqueSheetName(safeSheetName(result.requestName()), usedNames);
+                    usedNames.add(name);
+                    payloads.add(new SheetPayload(result.requestName(), name, quickColumns(query, queryRows), queryRows));
+                }
+                continue;
+            }
             List<ObjectNode> rows = extractResponseRows(root);
             rows = expandRows(rows, result.requestName(), filterSpec, mapper);
             if (rows.isEmpty()) continue;
@@ -608,7 +633,10 @@ public final class ExcelReportGenerator {
                                                     RuntimeConfig config,
                                                     RequestExecutor executor,
                                                     ObjectMapper mapper) {
-        if (query.source() instanceof SummaryQuerySource.FilterRows filterRows) {
+        if (query.source() instanceof SummaryQuerySource.QuickRows quick) {
+            List<ObjectNode> rows = QuickQueryEvaluator.evaluate(quickResponses.get(quick.requestKey()), quick, runtimeVars);
+            return new SummaryTablePayload(quickColumns(quick, rows), rows, true);
+        } else if (query.source() instanceof SummaryQuerySource.FilterRows filterRows) {
             return resolveSummaryFilterRows(
                     filterRows, rowsByRequest, filterSpec, mapper);
         } else if (query.source() instanceof SummaryQuerySource.NamedTable named) {
@@ -655,6 +683,13 @@ public final class ExcelReportGenerator {
                         query.requestKey(), filterSpec.responseColumns().get("*"))
                         : null);
         return new SummaryTablePayload(columns, rows, false);
+    }
+
+    private List<ColumnSpec> quickColumns(SummaryQuerySource.QuickRows query, List<ObjectNode> rows) {
+        if (query.columns().stream().noneMatch(column -> column.field().equals("*"))) return query.columns();
+        LinkedHashSet<String> fields = new LinkedHashSet<>();
+        rows.forEach(row -> row.fieldNames().forEachRemaining(fields::add));
+        return ColumnSpec.project(fields, null);
     }
 
     private SummaryTablePayload resolveSummaryNamedTable(SummaryQuerySource.NamedTable named,
