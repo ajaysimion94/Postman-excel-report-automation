@@ -1,4 +1,4 @@
-/* Guided Report Studio workflow. It compiles structured choices into the existing
+/* Guided CEMS Studio workflow. It compiles structured choices into the existing
    .filter language so guided and editor-created reports share one execution path. */
 const guide = {
   action:'home', step:'home', collectionPath:'', collection:null, current:null, items:[],
@@ -175,7 +175,7 @@ function guideReportsStep() {
   guideHeader('SEARCH REPORTS', 'Find a generated report');
   const query = guide.reportSearch.trim().toLowerCase();
   const reports = state.files.filter(file => !file.directory && file.path.startsWith('reports/') && file.path.endsWith('.xlsx') && (!query || file.path.toLowerCase().includes(query)));
-  return `<div class="guided-message"><span>⌕</span><div><strong>Search generated workbooks.</strong><p>Run details are shown when Report Studio can match the workbook to its history.</p></div></div>
+  return `<div class="guided-message"><span>⌕</span><div><strong>Search generated workbooks.</strong><p>Run details are shown when CEMS Studio can match the workbook to its history.</p></div></div>
     <label class="guided-search"><span>⌕</span><input type="search" data-guide-report-search value="${guideEscape(guide.reportSearch)}" placeholder="Search report names" aria-label="Search reports"></label>
     <div class="guided-report-list">${reports.map(file => { const run = state.history.find(item => item.files?.includes(file.path)); return `<button type="button" data-guide-report="${guideEscape(file.path)}"><span class="guided-report-glyph">▦</span><span><strong>${guideEscape(basename(file.path))}</strong><small>${run ? `${guideEscape(run.collection)} · ${guideEscape(formatDate(run.finishedAt || run.startedAt))}` : 'Workbook file'}</small></span><b>Open →</b></button>`; }).join('') || `<div class="guided-empty"><strong>No matching reports</strong><p>Generate a report or try another search.</p></div>`}</div>`;
 }

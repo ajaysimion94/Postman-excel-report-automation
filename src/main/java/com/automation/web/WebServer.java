@@ -59,7 +59,7 @@ public final class WebServer implements AutoCloseable {
         WebServer app = new WebServer(workspace, env, port);
         Runtime.getRuntime().addShutdownHook(new Thread(app::close));
         app.start();
-        System.out.println("Report Studio: http://127.0.0.1:" + app.port());
+        System.out.println("CEMS Studio: http://127.0.0.1:" + app.port());
         System.out.println("Workspace: " + workspace.toAbsolutePath().normalize());
         System.out.println("Press Ctrl+C to stop.");
     }
@@ -94,7 +94,7 @@ public final class WebServer implements AutoCloseable {
         if (!hosts.contains(exchange.getRequestHeaders().getFirst("Host"))) throw new WebException(403, "Only local workspace requests are accepted.");
         String origin = exchange.getRequestHeaders().getFirst("Origin");
         if (origin != null && !hosts.stream().anyMatch(host -> origin.equals("http://" + host))) {
-            throw new WebException(403, "Open Report Studio directly from its local address.");
+            throw new WebException(403, "Open CEMS Studio directly from its local address.");
         }
         String fetchSite = exchange.getRequestHeaders().getFirst("Sec-Fetch-Site");
         if ("cross-site".equals(fetchSite)) throw new WebException(403, "Cross-site requests are not accepted.");

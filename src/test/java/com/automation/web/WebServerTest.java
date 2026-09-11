@@ -79,7 +79,7 @@ class WebServerTest {
     @Test void servesOfflineInterfaceAndActualWorkspaceFiles() throws Exception {
         var page = request("GET", "/", null);
         assertEquals(200, page.statusCode());
-        assertTrue(page.body().contains("Report Studio"));
+        assertTrue(page.body().contains("CEMS Studio"));
         assertTrue(page.body().contains("Guided workspace"));
         assertTrue(page.headers().firstValue("Content-Security-Policy").orElseThrow().contains("frame-ancestors 'none'"));
         assertEquals(200, request("GET", "/app.js", null).statusCode());
