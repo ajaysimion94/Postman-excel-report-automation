@@ -13,9 +13,13 @@ Enter a query in the single-line Quick run search bar, then click **Run query** 
 $students = @school #studentsinfo > name, age where School.class.students.student.age < 13;
 ```
 
-The collection is resolved from `@name`; no dropdown selection or saved filter is required. Results use the normal report progress, workbook preview, and Excel download. Errors appear below the box without clearing your query. **Open in IDE** copies the query into a new unsaved filter tab for editing and saving. See the [quick query reference](FILTER_GUIDE.md#quick-queries) for nested paths and variables.
+The collection is resolved from `@name`; no dropdown selection or saved filter is required. When a quick run finishes, its results appear directly below the query bar in Guided mode. The Summary sheet displays filtered query tables and variable results; use **Result sheet** to view other worksheets and the arrow buttons to page through 200 worksheet rows at a time. You can download Excel or optionally open the full report in the IDE. Loading errors can be retried without executing the API again. Errors appear without clearing your query. **Open in IDE** copies the query into a new unsaved filter tab for editing and saving. See the [quick query reference](FILTER_GUIDE.md#quick-queries) for nested paths and variables.
 
-Quick run also provides inline suggestions:
+After a run, choose **Save query**, enter your own name (for example `Students under 13`), and confirm. The executed query is saved as `queries/Students under 13.filter`, separate from regular filters and generated reports. Editing the query bar after a run does not change the saved snapshot. Existing names are never overwritten by this action; choose another name to save a new copy.
+
+Use **Saved queries** beside the query bar to load a query for another run, or open the **Queries** folder in the IDE explorer to edit, rename, or run it. Saving and loading a query do not execute the API. The `queries/` directory is created automatically when Report Studio starts. Multi-line scripts edited in the IDE can be reopened and run there.
+
+Inline suggestions:
 
 - Type `@` to list collections. Select one, then use `#` to choose one of its requests. Names with spaces are quoted automatically.
 - After `>`, the selected API request is sent with its saved settings. A checklist shows discovered scalar columns with their types and sample values. Select fields and click **Use columns**; existing variable assignments, aliases, and `WHERE` conditions are preserved.
@@ -45,7 +49,7 @@ java -jar target/postman-excel-runner-1.0.0.jar --web \
 ```
 
 The workspace directory must already exist. The application creates its
-`collections`, `filters`, and `reports` subdirectories when needed. The default
+`collections`, `filters`, `queries`, and `reports` subdirectories when needed. The default
 environment file is `.env` inside the selected workspace. Environment variables,
 credential profiles, filter overrides, HTTP settings, and Postman compatibility
 rules use the existing Java engine.

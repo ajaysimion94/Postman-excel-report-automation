@@ -619,6 +619,205 @@ test('failed inspection is shown without repeated automatic requests and nested 
   assert.equal(input.value, '@school #Students > name where School.class.students.student.age ');
 });
 
+test('completed quick runs load filtered results inline without switching out of Guided mode', async () => {
+  const app = client();
+  app.elements.get('guided-workspace').hidden = false;
+  app.run(`
+    guide.run = {id:'quick-1',status:'running'}; guide.step = 'running';
+    guide.quickResult = {runId:'quick-1',source:'@school #students > name where age < 13;',sheet:0,offset:0};
+    globalThis.previewCalls = [];
+    api = async path => path.startsWith('/api/run?') ? {id:'quick-1',status:'completed',name:'quick-run.filter',total:1,completed:1,files:['reports/quick.xlsx'],failed:0} : [];
+    refreshFiles = async () => {};
+    getPreview = async (path,sheet,offset) => { previewCalls.push({path,sheet,offset}); return {
+      sheets:[{name:'Summary'},{name:'students'}],sheet:0,offset:0,totalRows:201,widths:[120],styles:{},merges:[],
+      rows:[{index:0,height:24,cells:[{column:0,text:'Asha <script>bad()</script>'}]}]
+    }; };
+  `);
+  await app.run("guidePoll('quick-1')");
+  assert.equal(app.elements.get('guided-workspace').hidden, false);
+  assert.equal(app.elements.get('guided-title').textContent, 'Query results');
+  assert.equal(app.run('previewCalls.length'), 1);
+  assert.equal(app.run('previewCalls[0].sheet'), 0);
+  const html = app.elements.get('guided-content').innerHTML;
+  assert.ok(html.includes('Quick query results'));
+  assert.ok(html.includes('Asha &lt;script&gt;bad()&lt;/script&gt;'));
+  assert.ok(!html.includes('<script>'));
+  assert.ok(html.includes('data-guide-result-sheet'));
+  assert.ok(html.includes('data-guide-result-page="next"'));
+  assert.ok(html.includes('Download Excel'));
+});
+
+test('inline result errors can retry loading without sending the API request again', async () => {
+  const app = client();
+  app.run(`
+    guide.run = {id:'quick-1',status:'completed',files:['reports/quick.xlsx']}; guide.step = 'running';
+    guide.quickResult = {runId:'quick-1',source:'@school #students > name;',sheet:0,offset:0};
+    getPreview = async () => { throw new Error('Workbook could not be loaded'); };
+  `);
+  await app.run("guideLoadQuickResult('reports/quick.xlsx')");
+  assert.ok(app.elements.get('guided-content').innerHTML.includes('Retry loading results'));
+  assert.equal(app.run('guide.quickResult.loading'), false);
+  app.run(`getPreview = async () => ({sheets:[{name:'Summary'}],sheet:0,offset:0,totalRows:0,widths:[],styles:{},merges:[],rows:[]});`);
+  await app.run("guideLoadQuickResult('reports/quick.xlsx')");
+  assert.equal(app.run('guide.quickResult.error'), '');
+  assert.ok(app.elements.get('guided-content').innerHTML.includes('No result cells to display'));
+});
+
+test('out-of-order inline sheet loads cannot replace the current page or a new query', async () => {
+  const app = client();
+  app.run(`
+    guide.run = {id:'quick-1',status:'completed'}; guide.step = 'running';
+    guide.quickResult = {runId:'quick-1',source:'@school #students > name;'};
+    globalThis.loads = [];
+    getPreview = (path,sheet,offset) => new Promise(resolve => loads.push({sheet,offset,resolve}));
+    globalThis.makePreview = (sheet,offset,text) => ({sheets:[{name:'Summary'},{name:'students'}],sheet,offset,totalRows:300,widths:[120],styles:{},merges:[],rows:[{index:offset,height:24,cells:[{column:0,text}]}]});
+  `);
+  const oldLoad = app.run("guideLoadQuickResult('reports/quick.xlsx',0,0)");
+  const newLoad = app.run("guideLoadQuickResult('reports/quick.xlsx',1,200)");
+  app.run("loads[1].resolve(makePreview(1,200,'Current page'))");
+  await newLoad;
+  app.run("loads[0].resolve(makePreview(0,0,'Old page'))");
+  await oldLoad;
+  assert.equal(app.run('guide.quickResult.preview.sheet'), 1);
+  assert.equal(app.run('guide.quickResult.offset'), 200);
+  assert.ok(!app.elements.get('guided-content').innerHTML.includes('Old page'));
+  const staleLoad = app.run("guideLoadQuickResult('reports/quick.xlsx',0,0)");
+  app.run("guideReset(); loads[2].resolve(makePreview(0,0,'Stale query'))");
+  await staleLoad;
+  assert.equal(app.run('guide.quickResult'), null);
+  assert.ok(!app.elements.get('guided-content').innerHTML.includes('Stale query'));
+});
+
+test('saving a named quick query stores the executed snapshot separately and does not run the API', async () => {
+  const app = client();
+  app.elements.get('guided-quick-query').value = '@school #students > age where age > 50;';
+  app.run(`
+    guide.run = {id:'saved-run',status:'completed'}; guide.step = 'running';
+    guide.quickResult = {runId:'saved-run',source:'@school #students > name where age < 13;',saveName:'Students under 13',saveOpen:true};
+    globalThis.calls = []; api = async (path, options) => { calls.push({path,...options}); return {path:options.body.path}; };
+    refreshFiles = async () => {};
+  `);
+  await app.run('guideSaveQuickQuery()');
+  assert.equal(app.run('calls.length'), 1);
+  assert.equal(app.run('calls[0].path'), '/api/file');
+  assert.equal(app.run('calls[0].body.path'), 'queries/Students under 13.filter');
+  assert.equal(app.run('calls[0].body.content'), '@school #students > name where age < 13;');
+  assert.equal(app.run('calls[0].body.revision'), null);
+  assert.ok(app.elements.get('guided-content').innerHTML.includes('Saved as'));
+});
+
+test('quick query saves reject unsafe names and duplicates without overwriting existing files', async () => {
+  const app = client();
+  assert.throws(() => app.run("guideQueryPath('../outside')"));
+  assert.throws(() => app.run("guideQueryPath('')"));
+  assert.equal(app.run("guideQueryPath('Students.filter')"), 'queries/Students.filter');
+  app.run(`
+    guide.run = {id:'saved-run',status:'completed'}; guide.step = 'running';
+    guide.quickResult = {runId:'saved-run',source:'@school #students > name;',saveName:'Students',saveOpen:true};
+    state.files = [{path:'queries/Students.filter'}];
+  `);
+  await app.run('guideSaveQuickQuery()');
+  assert.ok(app.run('guide.quickResult.saveError').includes('different name'));
+  assert.equal(app.run('guide.quickResult.savedQueryPath'), undefined);
+  app.run(`state.files = []; api = async () => { throw new Error('File already exists; choose a different name'); };`);
+  await app.run('guideSaveQuickQuery()');
+  assert.equal(app.run('guide.quickResult.savingQuery'), false);
+  assert.ok(app.elements.get('guided-content').innerHTML.includes('File already exists'));
+});
+
+test('saved queries load in Guided mode without executing and remain separate from regular filters', async () => {
+  const app = client();
+  app.run(`
+    guide.step = 'queries'; state.files = [{path:'queries/Students.filter'},{path:'filters/Report.filter'}];
+    api = async path => { assertPath = path; return {content:'@school #students > name;'}; };
+    guideRender();
+  `);
+  assert.ok(app.elements.get('guided-content').innerHTML.includes('queries/Students.filter'));
+  assert.ok(!app.elements.get('guided-content').innerHTML.includes('filters/Report.filter'));
+  await app.run("guideLoadSavedQuery('queries/Students.filter')");
+  assert.equal(app.elements.get('guided-quick-query').value, '@school #students > name;');
+  assert.ok(app.run('assertPath').startsWith('/api/file?'));
+});
+
+test('plain Quick run text searches reports, filters, and saved queries while @ remains query input', async () => {
+  const app = client();
+  app.run(`
+    state.files = [
+      {path:'reports/Students under 13.xlsx'},
+      {path:'filters/Student report.filter'},
+      {path:'queries/Students under 13.filter'},
+      {path:'collections/Students.json'}
+    ];
+    $('guided-quick-query').value = 'student';
+  `);
+  await app.run('quickAssistUpdate()');
+  assert.equal(app.run('quickAssist.context.stage'), 'workspace');
+  assert.equal(app.run('quickAssist.options.length'), 3);
+  assert.equal(app.run('quickAssist.options.map(item => item.kind).join(",")'), 'filter,query,report');
+  assert.equal(app.run("quickIsQuerySource('@school #students > name;')"), true);
+  assert.equal(app.run("quickIsQuerySource('$rows = @school #students > name;')"), true);
+  assert.equal(app.run("quickIsQuerySource('student')"), false);
+  app.run(`globalThis.calls = []; api = async (...args) => { calls.push(args); }; guideQuickRun();`);
+  assert.equal(app.run('calls.length'), 0);
+  assert.ok(app.elements.get('guided-quick-error').textContent.includes('Choose a report'));
+});
+
+test('Quick run search selections route reports inline, queries to the bar, and filters to the IDE', async () => {
+  const app = client();
+  app.run(`
+    state.files = [
+      {path:'reports/Students.xlsx'},
+      {path:'filters/Students.filter'},
+      {path:'queries/Students.filter'}
+    ];
+    $('guided-quick-query').value = 'students';
+  `);
+  await app.run('quickAssistUpdate()');
+  app.run(`
+    globalThis.opened = [];
+    guideOpenSearchReport = async path => opened.push(['report',path]);
+    guideLoadSavedQuery = async path => opened.push(['query',path]);
+    guideClose = () => opened.push(['close']);
+    openFile = async path => opened.push(['filter',path]);
+    quickAssistPick(2);
+  `);
+  assert.equal(app.run('opened.map(item => item.join(":")).join(",")'), 'report:reports/Students.xlsx');
+  await app.run(`(async () => {
+    $('guided-quick-query').value = 'students'; await quickAssistUpdate(); quickAssistPick(1);
+  })()`);
+  assert.equal(app.run('opened.map(item => item.join(":")).join(",")'), 'report:reports/Students.xlsx,query:queries/Students.filter');
+  await app.run(`(async () => {
+    $('guided-quick-query').value = 'students'; await quickAssistUpdate(); quickAssistPick(0);
+  })()`);
+  assert.equal(app.run('opened.map(item => item.join(":")).join(",")'), 'report:reports/Students.xlsx,query:queries/Students.filter,close,filter:filters/Students.filter');
+});
+
+test('a report chosen from Quick run search opens its result inline in Guided mode', async () => {
+  const app = client();
+  app.run(`
+    state.files = [{path:'reports/Students under 13.xlsx'}];
+    getPreview = async () => ({sheets:[{name:'Students'}],sheet:0,offset:0,totalRows:1,widths:[120],styles:{},merges:[],rows:[{index:0,height:24,cells:[{column:0,text:'Asha'}]}]});
+  `);
+  await app.run("guideOpenSearchReport('reports/Students under 13.xlsx')");
+  assert.equal(app.elements.get('guided-title').textContent, 'Report results');
+  assert.equal(app.run('guide.quickResult.path'), 'reports/Students under 13.xlsx');
+  assert.ok(app.elements.get('guided-content').innerHTML.includes('Asha'));
+});
+
+test('a save completing after another quick run does not mark the new query as saved', async () => {
+  const app = client();
+  app.run(`
+    guide.run = {id:'old',status:'completed'};
+    guide.quickResult = {runId:'old',source:'@school #students > name;',saveName:'Old query'};
+    api = async () => new Promise(resolve => { globalThis.finishSave = resolve; });
+    refreshFiles = async () => {};
+  `);
+  const pending = app.run('guideSaveQuickQuery()');
+  app.run("guide.quickResult = {runId:'new',source:'@school #students > age;'}; guide.run = {id:'new',status:'running'}; finishSave({});");
+  await pending;
+  assert.equal(app.run('guide.quickResult.savedQueryPath'), undefined);
+});
+
 test('quick run uses the shared endpoint and keeps query text when validation fails', async () => {
   const app = client();
   app.elements.get('guided-quick-query').value = '@school #studentsinfo > name, age where age < 13;';

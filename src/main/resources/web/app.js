@@ -329,6 +329,7 @@ function selectedFolder(type = 'filter') {
   const base = type === 'collection' ? 'collections' : 'filters';
   const selected = state.files.find(file => file.path === state.selected);
   const folder = selected?.directory ? selected.path : state.selected.split('/').slice(0, -1).join('/');
+  if (type === 'filter' && (folder === 'queries' || folder?.startsWith('queries/'))) return folder;
   return folder?.startsWith(base) ? folder : base;
 }
 

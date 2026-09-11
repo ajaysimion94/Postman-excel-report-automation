@@ -10,7 +10,7 @@ import java.util.*;
 /** Local, bounded file management. Hidden files, links, and paths outside the workspace are excluded. */
 final class WorkspaceFiles {
     static final int MAX_TEXT_BYTES = 5 * 1024 * 1024;
-    private static final Set<String> ROOTS = Set.of("collections", "filters", "reports");
+    private static final Set<String> ROOTS = Set.of("collections", "filters", "queries", "reports");
     private final Path root;
 
     record Entry(String path, String name, boolean directory, long size, String modified) {}
@@ -25,7 +25,7 @@ final class WorkspaceFiles {
 
     Path resolve(String name) {
         if (name == null || name.length() > 600 || name.contains("\\")) {
-            throw new WebException(400, "Choose a path inside collections, filters, or reports.");
+            throw new WebException(400, "Choose a path inside collections, filters, queries, or reports.");
         }
         String[] parts = name.split("/", -1);
         if (!ROOTS.contains(parts[0])) throw new WebException(400, "This folder is outside the workspace.");
@@ -42,7 +42,7 @@ final class WorkspaceFiles {
 
     List<Entry> list() throws IOException {
         List<Entry> entries = new ArrayList<>();
-        for (String name : List.of("collections", "filters", "reports")) {
+        for (String name : List.of("collections", "filters", "queries", "reports")) {
             Path base = resolve(name);
             try (var paths = Files.walk(base, 12)) {
                 for (Path path : paths.sorted().toList()) {
@@ -102,7 +102,7 @@ final class WorkspaceFiles {
     synchronized void move(String from, String to) throws IOException {
         Path source = child(from);
         Path destination = child(to);
-        if (!from.split("/")[0].equals(to.split("/")[0])) throw new WebException(400, "Keep files in their collection, filter, or report folder.");
+        if (!from.split("/")[0].equals(to.split("/")[0])) throw new WebException(400, "Keep files in their collection, filter, query, or report folder.");
         if (!Files.exists(source)) throw new WebException(404, "The selected file or folder no longer exists.");
         if (Files.exists(destination)) throw new WebException(409, "A file or folder already uses that name.");
         if (destination.startsWith(source)) throw new WebException(400, "A folder cannot be moved inside itself.");
@@ -136,7 +136,7 @@ final class WorkspaceFiles {
     private void editable(String name) {
         resolve(name);
         if (!(name.startsWith("collections/") && name.endsWith(".json"))
-                && !(name.startsWith("filters/") && name.endsWith(".filter"))) {
+                && !((name.startsWith("filters/") || name.startsWith("queries/")) && name.endsWith(".filter"))) {
             throw new WebException(400, "Open a .json collection or a .filter report definition.");
         }
     }
@@ -144,6 +144,7 @@ final class WorkspaceFiles {
     private boolean allowedFile(String name) {
         return name.startsWith("collections/") && name.endsWith(".json")
                 || name.startsWith("filters/") && name.endsWith(".filter")
+                || name.startsWith("queries/") && name.endsWith(".filter")
                 || name.startsWith("reports/") && name.endsWith(".xlsx");
     }
 

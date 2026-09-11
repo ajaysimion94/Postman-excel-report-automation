@@ -1,0 +1,1 @@
+@pokeapi-open #"List Pokémon types" > results.name, results.url;

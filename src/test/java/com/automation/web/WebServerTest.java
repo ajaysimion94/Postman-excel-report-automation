@@ -291,6 +291,33 @@ class WebServerTest {
         assertEquals(1, hits.get());
     }
 
+    @Test void namedQueriesAreSavedSeparatelyAndCanBeReadAndRun() throws Exception {
+        String source = "@local #\"List items\" > title where id > 1;";
+        String path = "queries/Items over one.filter";
+        assertTrue(Files.isDirectory(workspace.resolve("queries")));
+        var saved = request("PUT", "/api/file", Map.of("path", path, "content", source));
+        assertEquals(200, saved.statusCode(), saved.body());
+        assertEquals(source, Files.readString(workspace.resolve(path)));
+        assertEquals(0, hits.get());
+        assertFalse(Files.exists(workspace.resolve("filters/Items over one.filter")));
+        assertTrue(request("GET", "/api/files", null).body().contains(path));
+        assertEquals(source, json(request("GET", "/api/file?path=queries%2FItems%20over%20one.filter", null)).path("content").asText());
+        assertEquals(409, request("PUT", "/api/file", Map.of("path", path, "content", "overwrite")).statusCode());
+        assertEquals(source, Files.readString(workspace.resolve(path)));
+        JsonNode started = json(request("POST", "/api/runs/saved-filter", Map.of("filter", path)));
+        assertEquals("completed", awaitRun(started.path("id").asText()).path("status").asText());
+        assertEquals(1, hits.get());
+    }
+
+    @Test void queryFolderEnforcesWorkspacePathsAndFileTypes() throws Exception {
+        assertEquals(400, request("PUT", "/api/file", Map.of("path", "queries/../outside.filter", "content", "x")).statusCode());
+        assertEquals(400, request("PUT", "/api/file", Map.of("path", "queries/query.json", "content", "{}")).statusCode());
+        assertEquals(400, request("POST", "/api/trash", Map.of("path", "queries")).statusCode());
+        Path outside = Files.createTempDirectory("outside-queries");
+        Files.createSymbolicLink(workspace.resolve("queries/link"), outside);
+        assertEquals(400, request("PUT", "/api/file", Map.of("path", "queries/link/leak.filter", "content", "x")).statusCode());
+    }
+
     @Test void runsASavedFilterWithoutSendingItsSourceFromTheEditor() throws Exception {
         Files.writeString(workspace.resolve("filters/quick.filter"), """
                 COLLECTION local;

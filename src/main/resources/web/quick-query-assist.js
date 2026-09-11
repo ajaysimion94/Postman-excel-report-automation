@@ -65,6 +65,37 @@ function quickContext(source, caret = source.length) {
   return null; // Do not suggest fields in values or confuse a WHERE comparison with the projection '>'.
 }
 
+// A variable assignment is still a quick query once it reaches @. Everything
+// else in the shared box is a workspace search rather than a malformed query.
+function quickIsQuerySource(source) {
+  return /^\s*(?:\$\s*[\w.-]+\s*=\s*)?@/.test(source);
+}
+
+function quickWorkspaceOptions(source) {
+  const needle = source.trim().toLocaleLowerCase();
+  if (!needle) return [];
+  const kinds = [
+    {prefix:'reports/', extension:'.xlsx', kind:'report', action:'Open report'},
+    {prefix:'filters/', extension:'.filter', kind:'filter', action:'Open filter in IDE'},
+    {prefix:'queries/', extension:'.filter', kind:'query', action:'Load into Quick run'}
+  ];
+  return state.files
+    .filter(file => !file.directory)
+    .map(file => {
+      const type = kinds.find(item => file.path.startsWith(item.prefix) && file.path.endsWith(item.extension));
+      return type && {...type,path:file.path,label:guideBasename(file.path)};
+    })
+    .filter(Boolean)
+    .filter(item => `${item.label} ${item.path}`.toLocaleLowerCase().includes(needle))
+    .sort((a,b) => {
+      const aExact = a.label.toLocaleLowerCase().startsWith(needle) ? 0 : 1;
+      const bExact = b.label.toLocaleLowerCase().startsWith(needle) ? 0 : 1;
+      return aExact - bExact || a.kind.localeCompare(b.kind) || a.label.localeCompare(b.label);
+    })
+    .slice(0,30)
+    .map(item => ({...item,detail:`${item.kind[0].toUpperCase() + item.kind.slice(1)} · ${item.action}`}));
+}
+
 function quickSchema(body) {
   const root = JSON.parse(body);
   const fields = new Map();
@@ -139,7 +170,10 @@ async function quickDiscover(collection, path, request, force = false) {
 
 async function quickAssistUpdate(force = false) {
   const input = $('guided-quick-query');
-  const context = quickContext(input.value,input.selectionStart ?? input.value.length);
+  const source = input.value;
+  const queryContext = quickContext(source,input.selectionStart ?? input.value.length);
+  const context = queryContext || (!quickIsQuerySource(source) && source.trim()
+    ? {stage:'workspace',source,from:0,to:source.length,fragment:source.trim()} : null);
   const version = ++quickAssist.version;
   quickAssist.context = context;
   quickAssist.options = [];
@@ -147,6 +181,10 @@ async function quickAssistUpdate(force = false) {
   const current = () => version === quickAssist.version && input.value === context.source;
   try {
     if (!state.files.length && state.token) { await refreshFiles(); if (!current()) return; }
+    if (context.stage === 'workspace') {
+      quickAssistList('Search reports, filters, and queries',quickWorkspaceOptions(context.fragment));
+      return;
+    }
     const collections = guideCollections();
     if (context.stage === 'collection') {
       quickAssistList('Choose a collection',collections.filter(file => guideBasename(file.path).toLowerCase().includes(context.fragment.toLowerCase().replace(/["']$/, '')))
@@ -219,6 +257,13 @@ function quickAssistPick(index) {
   const option = quickAssist.options[index];
   const context = quickAssist.context;
   if (!option || option.disabled || !context || $('guided-quick-query').value !== context.source) return;
+  if (context.stage === 'workspace') {
+    quickAssistClose();
+    if (option.kind === 'report') guideOpenSearchReport(option.path).catch(error => guideQuickError(error.message));
+    else if (option.kind === 'query') guideLoadSavedQuery(option.path);
+    else { guideClose(); openFile(option.path).catch(handleError); }
+    return;
+  }
   const tail = context.source.slice(context.to);
   if (context.stage === 'collection') {
     const marker = tail.match(/^\s*#/);

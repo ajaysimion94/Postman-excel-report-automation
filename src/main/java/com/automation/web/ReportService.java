@@ -214,8 +214,8 @@ final class ReportService implements AutoCloseable {
     synchronized Map<String, Object> startSavedFilter(String filterName, String requestedCollection,
                                                       String outputFile) throws IOException {
         Path filterPath = files.resolve(filterName);
-        if (!filterName.startsWith("filters/") || !filterName.endsWith(".filter") || !Files.isRegularFile(filterPath)) {
-            throw new WebException(400, "Select a saved .filter file from Filters.");
+        if (!(filterName.startsWith("filters/") || filterName.startsWith("queries/")) || !filterName.endsWith(".filter") || !Files.isRegularFile(filterPath)) {
+            throw new WebException(400, "Select a saved .filter file from Filters or Queries.");
         }
         if (Files.size(filterPath) > WorkspaceFiles.MAX_TEXT_BYTES) {
             throw new WebException(413, "Report definitions must be 5 MB or smaller.");

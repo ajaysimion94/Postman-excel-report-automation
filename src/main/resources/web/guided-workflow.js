@@ -2,7 +2,7 @@
    .filter language so guided and editor-created reports share one execution path. */
 const guide = {
   action:'home', step:'home', collectionPath:'', collection:null, current:null, items:[],
-  busy:false, error:'', fieldSearch:'', filename:'', savedPath:'', savedSource:'', run:null, reportSearch:'',
+  busy:false, error:'', fieldSearch:'', filename:'', savedPath:'', savedSource:'', run:null, reportSearch:'', quickResult:null,
   summary:{enabled:true,title:'API report',description:'Generated from selected API data.',query:true,
     mode:'table',valueField:'',metric:false,status:true}
 };
@@ -25,7 +25,7 @@ function guideNewCurrent() {
 
 function guideReset(action = 'home') {
   guide.action = action;
-  guide.step = action === 'home' ? 'home' : ['reports','run','collection'].includes(action) ? action : 'collection';
+  guide.step = action === 'home' ? 'home' : ['reports','run','collection','queries'].includes(action) ? action : 'collection';
   guide.collectionPath = '';
   guide.collection = null;
   guide.current = guideNewCurrent();
@@ -37,6 +37,7 @@ function guideReset(action = 'home') {
   guide.savedPath = '';
   guide.savedSource = '';
   guide.run = null;
+  guide.quickResult = null;
   guide.summary = {enabled:true,title:'API report',description:'Generated from selected API data.',query:true,
     mode:'table',valueField:'',metric:false,status:true};
   guideRender();
@@ -194,13 +195,144 @@ function guideCollectionAction() {
 
 function guideRunView() {
   const run = guide.run;
-  const running = run && ['queued','running'].includes(run.status);
-  guideHeader(running ? 'GENERATING REPORT' : run?.status === 'completed' ? 'REPORT READY' : 'RUN NEEDS ATTENTION', running ? 'Running your filter' : run?.status === 'completed' ? 'Your workbook is ready' : 'The report could not finish');
+  const quick = guide.quickResult;
+  const running = quick?.starting || run && ['queued','running'].includes(run.status);
+  guideHeader(quick ? 'QUICK RESULT' : running ? 'GENERATING REPORT' : run?.status === 'completed' ? 'REPORT READY' : 'RUN NEEDS ATTENTION', running ? 'Running your query' : run?.status === 'completed' ? quick ? quick.source ? 'Query results' : 'Report results' : 'Your workbook is ready' : 'The report could not finish');
   const progress = run?.total ? Math.round(((run.completed || 0) / run.total) * 100) : 0;
   return `<div class="guided-run-state ${run?.status || ''}"><span>${running ? '<i class="guided-spinner"></i>' : run?.status === 'completed' ? '✓' : '!'}</span><div><strong>${guideEscape(run?.name || 'Report')}</strong><p>${guideEscape(run?.summary || run?.error || 'Preparing requests…')}</p></div></div>
     <div class="guided-progress"><div><span>${run?.completed || 0} of ${run?.total || 0} requests</span><strong>${progress}%</strong></div><span><i style="width:${progress}%"></i></span></div>
-    ${!running && run?.status === 'completed' ? `<div class="guided-final-actions"><button type="button" class="primary-button" data-guide-open-run>Open report results</button>${run.files?.[0] ? `<a class="outline-button" href="/api/download?path=${encodeURIComponent(run.files[0])}">Download Excel</a>` : ''}</div>` : ''}
+    ${guide.error ? guideError() : ''}
+    ${quick ? guideQuickResultsView() : ''}
+    ${quick?.runId && !running ? guideQuickSaveView() : ''}
+    ${!running && run?.status === 'completed' ? `<div class="guided-final-actions"><button type="button" class="${quick ? 'outline-button' : 'primary-button'}" data-guide-open-run>${quick ? 'Open full report in IDE' : 'Open report results'}</button>${run.files?.[0] ? `<a class="outline-button" href="/api/download?path=${encodeURIComponent(run.files[0])}">Download Excel</a>` : ''}</div>` : ''}
     ${!running && run?.status !== 'completed' ? `<button type="button" class="outline-button" data-guide-action="run">Choose another filter</button>` : ''}`;
+}
+
+function guideQuickSaveView() {
+  const result = guide.quickResult;
+  if (result.savedQueryPath) return `<p class="guided-query-saved" role="status">Saved as <strong>${guideEscape(result.savedQueryPath)}</strong>${result.saveError ? `<br>${guideEscape(result.saveError)}` : ''}</p>`;
+  if (!result.saveOpen) return '<button type="button" class="primary-button" data-guide-query-save-open>Save query</button>';
+  return `<form class="guided-query-save-form" data-guide-query-save-form>
+    <label for="guided-query-name">Query name<input id="guided-query-name" data-guide-query-name value="${guideEscape(result.saveName || '')}" placeholder="Students under 13" maxlength="120" autocomplete="off" ${result.savingQuery ? 'disabled' : ''} aria-describedby="guided-query-save-note"></label>
+    <small id="guided-query-save-note">Saves the query used for this run in queries/&lt;name&gt;.filter.</small>
+    ${result.saveError ? `<p role="alert" class="form-error">${guideEscape(result.saveError)}</p>` : ''}
+    <div><button type="submit" class="primary-button" ${result.savingQuery ? 'disabled' : ''}>${result.savingQuery ? 'Saving…' : 'Save query'}</button><button type="button" class="outline-button" data-guide-query-save-cancel ${result.savingQuery ? 'disabled' : ''}>Cancel</button></div>
+  </form>`;
+}
+
+function guideQueryPath(name) {
+  const base = String(name || '').trim().replace(/\.filter$/i,'');
+  if (!/^[\p{L}\p{N}][\p{L}\p{N}._ ()-]{0,112}$/u.test(base)) throw new Error('Use 1–113 characters: letters, numbers, spaces, dots, parentheses, hyphens or underscores. Start with a letter or number.');
+  return `queries/${base}.filter`;
+}
+
+async function guideSaveQuickQuery() {
+  const result = guide.quickResult;
+  if (!result?.runId || result.runId !== guide.run?.id || ['queued','running'].includes(guide.run.status) || result.savingQuery || result.savedQueryPath) return;
+  let path;
+  try {
+    path = guideQueryPath(result.saveName);
+    if (state.files.some(file => file.path === path) || state.documents.some(doc => doc.path === path)) throw new Error('A query already uses that name. Choose a different name.');
+  } catch (error) { result.saveError = error.message; guideRender(); return; }
+  result.savingQuery = true; result.saveError = ''; guideRender();
+  try {
+    // Save the executed snapshot, even if the query bar has since been edited.
+    await api('/api/file',{method:'PUT',body:{path,content:result.source,revision:null}});
+    result.savedQueryPath = path;
+    await refreshFiles();
+  } catch (error) {
+    result.saveError = result.savedQueryPath ? 'Query saved, but the file list could not refresh. Use Saved queries to reload it.'
+      : error.status === 409 ? 'A query already uses that name. Choose a different name.' : error.message;
+  } finally {
+    result.savingQuery = false;
+    if (guide.quickResult === result) guideRender();
+  }
+}
+
+function guideSavedQueriesView() {
+  guideHeader('SAVED QUERIES','Your quick queries');
+  const queries = state.files.filter(file => !file.directory && file.path.startsWith('queries/') && file.path.endsWith('.filter'));
+  return `${guide.error ? guideError() : ''}<p class="guided-result-status">Choose a query to load it into Quick run, then run it when ready.</p>
+    <div class="guided-saved-query-list">${queries.map(file => `<div><button type="button" class="outline-button" data-guide-query-load="${guideEscape(file.path)}"><strong>${guideEscape(guideBasename(file.path))}</strong><small>${guideEscape(file.path)}</small></button><button type="button" class="quiet-button" data-guide-query-edit="${guideEscape(file.path)}">Open in IDE</button></div>`).join('') || '<p class="guided-result-status">No saved queries yet. Run a quick query, then choose Save query.</p>'}</div>`;
+}
+
+async function guideShowSavedQueries() {
+  quickAssistClose(); guideReset('queries');
+  try { await refreshFiles(); }
+  catch (error) { if (guide.step === 'queries') guide.error = error.message; }
+  if (guide.step === 'queries') guideRender();
+}
+
+async function guideLoadSavedQuery(path) {
+  try {
+    const file = await api(`/api/file?path=${encodeURIComponent(path)}`);
+    const source = file.content.trim();
+    if (/[\r\n]/.test(source) || !quickIsQuerySource(source)) {
+      guideClose();
+      await openFile(path);
+      return;
+    }
+    guideReset('home');
+    $('guided-quick-query').value = source;
+    guide.error = ''; guideQuickError(); quickAssistClose();
+    $('guided-quick-query').focus();
+  } catch (error) {
+    if (guide.step === 'queries') { guide.error = error.message; guideRender(); }
+    else guideQuickError(error.message);
+  }
+}
+
+function guideQuickResultsView() {
+  const result = guide.quickResult;
+  if (!result) return '';
+  const source = result.source ? `<details class="guided-result-source"><summary>Executed query</summary><pre>${guideEscape(result.source)}</pre></details>` : '';
+  if (result.error) return `${source}<div class="guided-error" role="alert">${guideEscape(result.error)}${result.path ? '<button type="button" class="outline-button" data-guide-result-retry>Retry loading results</button>' : ''}</div>`;
+  if (result.loading || result.starting || !result.preview && ['queued','running'].includes(guide.run?.status)) return `${source}<div class="guided-result-status" role="status"><span class="guided-spinner"></span>${result.loading ? 'Loading query results…' : 'Waiting for the query result…'}</div>`;
+  const preview = result.preview;
+  if (!preview) return `${source}<p class="guided-result-status">${guide.run?.status === 'completed' ? 'No workbook was produced for this query.' : 'No results are available for this run.'}</p>`;
+  const files = guide.run?.files || [];
+  const count = preview.rows.length;
+  const empty = !preview.rows.some(row => row.cells.some(cell => String(cell.text ?? '').trim()));
+  const failures = guide.run?.failed ? requestTable(guide.run.requests || []) : '';
+  return `${source}${failures}<section class="guided-inline-results" aria-label="Quick query results">
+    <div class="guided-result-toolbar">
+      ${files.length > 1 ? `<label>Workbook<select data-guide-result-file>${files.map(path => `<option value="${guideEscape(path)}" ${path === result.path ? 'selected' : ''}>${guideEscape(basename(path))}</option>`).join('')}</select></label>` : ''}
+      <label>Result sheet<select data-guide-result-sheet>${preview.sheets.map((sheet,index) => `<option value="${index}" ${index === result.sheet ? 'selected' : ''}>${guideEscape(sheet.name)}</option>`).join('')}</select></label>
+      <div class="page-controls"><button type="button" data-guide-result-page="prev" aria-label="Previous result page" ${result.offset === 0 ? 'disabled' : ''}>←</button><span>Worksheet rows ${count ? preview.offset + 1 : 0}–${preview.offset + count} of ${preview.totalRows.toLocaleString()}</span><button type="button" data-guide-result-page="next" aria-label="Next result page" ${preview.offset + count >= preview.totalRows ? 'disabled' : ''}>→</button></div>
+    </div>
+    ${empty ? '<p class="guided-result-status">No result cells to display on this sheet.</p>' : `<div class="guided-result-table" tabindex="0" role="region" aria-label="Scrollable query result table">${sheetTable(preview)}</div>`}
+  </section>`;
+}
+
+async function guideLoadQuickResult(path, sheet = 0, offset = 0) {
+  const result = guide.quickResult;
+  const ownsResult = result?.runId ? result.runId === guide.run?.id : guide.run?.files?.includes(path);
+  if (!result || !path || !ownsResult) return;
+  const version = (result.version || 0) + 1;
+  Object.assign(result,{path,sheet,offset,version,loading:true,error:'',preview:null});
+  guideRender();
+  try {
+    const preview = await getPreview(path,sheet,offset);
+    const stillOwnsResult = result.runId ? result.runId === guide.run?.id : guide.run?.files?.includes(path);
+    if (guide.quickResult !== result || result.version !== version || !stillOwnsResult) return;
+    result.preview = preview;
+  } catch (error) {
+    if (guide.quickResult !== result || result.version !== version) return;
+    result.error = error.message;
+  } finally {
+    if (guide.quickResult === result && result.version === version) { result.loading = false; guideRender(); }
+  }
+}
+
+async function guideOpenSearchReport(path) {
+  const run = state.history.find(item => item.files?.includes(path));
+  guide.action = 'home';
+  guide.step = 'running';
+  guide.error = '';
+  guide.run = run || {status:'completed',name:guideBasename(path),summary:'Saved workbook',files:[path],total:0,completed:0,failed:0,requests:[]};
+  guide.quickResult = {source:'',runId:null,starting:false,loading:false,error:'',preview:null,path,sheet:0,offset:0,version:0};
+  guideRender();
+  await guideLoadQuickResult(path);
 }
 
 
@@ -215,6 +347,7 @@ function guideRender() {
   else if (guide.step === 'draft') content.innerHTML = guideDraftStep();
   else if (guide.step === 'reports') content.innerHTML = guideReportsStep();
   else if (guide.step === 'run') content.innerHTML = guideRunStep();
+  else if (guide.step === 'queries') content.innerHTML = guideSavedQueriesView();
   else if (guide.step === 'collection-action') content.innerHTML = guideCollectionAction();
   else if (guide.step === 'running') content.innerHTML = guideRunView();
   const active = guide.action === 'home' ? 'home' : guide.action;
@@ -422,7 +555,7 @@ async function guideSave(runAfter = false) {
 
 async function guideStartSource(source,filename) {
   const result = await api('/api/runs',{method:'POST',body:{collection:guide.collectionPath,source,filename}});
-  guide.run = result; guide.step = 'running'; guide.busy = false; guideRender(); guidePoll(result.id);
+  guide.quickResult = null; guide.run = result; guide.step = 'running'; guide.busy = false; guideRender(); guidePoll(result.id);
 }
 
 async function guideRunSaved(path) {
@@ -430,7 +563,7 @@ async function guideRunSaved(path) {
   guide.busy = true; guide.error = ''; guideRender();
   try {
     const result = await api('/api/runs/saved-filter',{method:'POST',body:{filter:path}});
-    guide.run = result; guide.step = 'running'; guide.busy = false; guideRender(); guidePoll(result.id);
+    guide.quickResult = null; guide.run = result; guide.step = 'running'; guide.busy = false; guideRender(); guidePoll(result.id);
   } catch (error) { guide.busy = false; guide.error = error.message; guideRender(); }
 }
 
@@ -438,8 +571,11 @@ async function guidePoll(id) {
   try {
     const result = await api(`/api/run?id=${encodeURIComponent(id)}&poll=${Date.now()}`);
     if (guide.run?.id !== id) return;
-    guide.run = result; guideRender();
+    guide.run = result; guide.error = ''; guideRender();
     if (['queued','running'].includes(result.status)) { setTimeout(() => guidePoll(id),1000); return; }
+    if (guide.quickResult?.runId === id && result.status === 'completed' && result.files?.[0]) {
+      await guideLoadQuickResult(result.files[0]);
+    }
     const updates = await Promise.allSettled([refreshFiles(),api('/api/runs')]);
     if (updates[1].status === 'fulfilled') state.history = updates[1].value;
   } catch (error) {
@@ -480,6 +616,10 @@ function initializeGuided() {
     if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); guideQuickRun(); }
   });
   bind('guided-quick-editor','click',guideQuickEditor);
+  bind('guided-quick-saved','click',guideShowSavedQueries);
+  $('guided-workspace').addEventListener('submit',event => {
+    if (event.target.matches('[data-guide-query-save-form]')) { event.preventDefault(); guideSaveQuickQuery(); }
+  });
   bind('guided-toggle','click',() => $('guided-workspace').hidden ? guideOpen() : guideClose());
   bind('guided-close','click',guideClose);
   bind('guided-restart','click',() => { try { localStorage.removeItem('report-studio.guided-draft'); } catch {} guideReset('home'); });
@@ -506,6 +646,12 @@ function initializeGuided() {
     else if ('guideSave' in target.dataset) guideSave(false);
     else if ('guideGenerate' in target.dataset) guideSave(true);
     else if ('guideOpenEditor' in target.dataset) guideOpenEditor().catch(handleError);
+    else if ('guideQuerySaveOpen' in target.dataset) { guide.quickResult.saveOpen = true; guideRender(); $('guided-query-name').focus(); }
+    else if ('guideQuerySaveCancel' in target.dataset) { guide.quickResult.saveOpen = false; guideRender(); }
+    else if ('guideQueryLoad' in target.dataset) guideLoadSavedQuery(target.dataset.guideQueryLoad);
+    else if ('guideQueryEdit' in target.dataset) { guideClose(); openFile(target.dataset.guideQueryEdit).catch(handleError); }
+    else if ('guideResultRetry' in target.dataset) { const result = guide.quickResult; if (result) guideLoadQuickResult(result.path,result.sheet,result.offset); }
+    else if ('guideResultPage' in target.dataset) { const result = guide.quickResult; if (result && !result.loading) guideLoadQuickResult(result.path,result.sheet,Math.max(0,result.offset + (target.dataset.guideResultPage === 'next' ? 200 : -200))); }
     else if (target.dataset.guideRunFilter) guideRunSaved(target.dataset.guideRunFilter);
     else if (target.dataset.guideReport) { const run = state.history.find(item => item.files?.includes(target.dataset.guideReport)); guideClose(); if (run) state.run = run; openWorkbook(target.dataset.guideReport); }
     else if ('guideOpenRun' in target.dataset) { const run = guide.run; guideClose(); state.run = run; state.reportPath = run.files?.[0] || null; state.activeRun = null; setResultsOnly(true); setView('summary'); }
@@ -521,12 +667,15 @@ function initializeGuided() {
     else if ('guideConditionValue' in target.dataset) guide.current.conditions[Number(target.dataset.guideConditionValue)].value = target.value;
     else if ('guideSummary' in target.dataset) { guide.summary[target.dataset.guideSummary] = target.value; guidePersist(); }
     else if ('guideFilename' in target.dataset) { guide.filename = target.value; guidePersist(); }
+    else if ('guideQueryName' in target.dataset && guide.quickResult) guide.quickResult.saveName = target.value;
     else if ('guideReportSearch' in target.dataset) { guide.reportSearch = target.value; guideRender(); const input = document.querySelector('[data-guide-report-search]'); if (input) { input.focus(); input.setSelectionRange(input.value.length,input.value.length); } }
     else if ('guideListSearch' in target.dataset) guideFilterVisible(target);
   });
   $('guided-workspace').addEventListener('change',event => {
     const target = event.target;
-    if ('guideConditionField' in target.dataset) guide.current.conditions[Number(target.dataset.guideConditionField)].field = target.value;
+    if ('guideResultSheet' in target.dataset) guideLoadQuickResult(guide.quickResult.path,Number(target.value),0);
+    else if ('guideResultFile' in target.dataset) guideLoadQuickResult(target.value,0,0);
+    else if ('guideConditionField' in target.dataset) guide.current.conditions[Number(target.dataset.guideConditionField)].field = target.value;
     else if ('guideConditionOp' in target.dataset) { guide.current.conditions[Number(target.dataset.guideConditionOp)].op = target.value; guideRender(); }
     else if ('guideSummaryCheck' in target.dataset) { guide.summary[target.dataset.guideSummaryCheck] = target.checked; guidePersist(); guideRender(); }
     else if ('guideSummary' in target.dataset) { guide.summary[target.dataset.guideSummary] = target.value; guidePersist(); guideRender(); }
@@ -543,15 +692,24 @@ async function guideQuickRun() {
   if ($('guided-quick-run').disabled) return;
   const source = $('guided-quick-query').value.trim();
   if (!source) { guideQuickError('Enter a query to run.'); $('guided-quick-query').focus(); return; }
+  if (!quickIsQuerySource(source)) {
+    guideQuickError('Choose a report, filter, or saved query from the search results.');
+    quickAssistUpdate();
+    return;
+  }
   quickAssistClose();
   guideQuickError();
   $('guided-quick-run').disabled = true;
   $('guided-quick-run').textContent = 'Starting…';
+  const quick = {source,runId:null,starting:true,loading:false,error:'',preview:null,path:'',sheet:0,offset:0,version:0};
+  guide.quickResult = quick; guide.run = null; guide.step = 'running'; guide.error = ''; guideRender();
   try {
     // Let the shared parser resolve @collection, names, assignments and diagnostics.
     const result = await api('/api/runs',{method:'POST',body:{source,filename:'quick-run.filter'}});
+    if (guide.quickResult !== quick) return;
+    quick.runId = result.id; quick.starting = false;
     guide.run = result; guide.step = 'running'; guide.error = ''; guideRender(); guidePoll(result.id);
-  } catch (error) { guideQuickError(error.message); }
+  } catch (error) { if (guide.quickResult === quick) { quick.starting = false; quick.error = error.message; guideQuickError(error.message); guideRender(); } }
   finally { $('guided-quick-run').disabled = false; $('guided-quick-run').textContent = 'Run query'; }
 }
 
