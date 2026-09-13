@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Search & Query Explorer · CEMS Studio</title>
+  <meta name="theme-color" content="#192329">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/search.js" defer></script>
+</head>
+<body>
+  <header class="app-header">
+    <a class="brand" href="/" aria-label="CEMS Studio home">
+      <span class="brand-mark" aria-hidden="true">c.</span>
+      <span>CEMS Studio<span class="brand-subtitle">API → EXCEL</span></span>
+    </a>
+    <div class="global-search-container">
+      <input type="search" id="global-search" class="global-search-input" placeholder="Search workspace files, queries, documents..." autocomplete="off">
+    </div>
+    <a href="/" class="quiet-button">← Back to Studio</a>
+  </header>
+
+  <div class="search-layout">
+    <aside class="search-sidebar">
+      <div class="section-heading"><h2>SEARCH MODES</h2></div>
+      <nav class="search-tabs" id="search-tabs" aria-label="Search Modes">
+        <button data-mode="files" class="active">Workspace Files</button>
+        <button data-mode="queries">Queries</button>
+        <button data-mode="documents">OPDs</button>
+        <button data-mode="catalogs">Catalog types & records</button>
+      </nav>
+      
+      <!-- Dynamic Sidebar Content based on mode -->
+      <div id="sidebar-filters" class="sidebar-filters">
+      </div>
+    </aside>
+
+    <main class="search-main" id="search-main">
+      <div class="search-toolbar">
+        <h1 id="search-title">Workspace Search</h1>
+        <div class="search-actions">
+           <button id="export-btn" class="export-button" disabled>↓ Export to Excel</button>
+        </div>
+      </div>
+      
+      <div id="search-results-container" class="search-results-container">
+         <div class="empty-state">
+            <span class="empty-symbol" aria-hidden="true">⌕</span>
+            <h2>Enter a query to begin</h2>
+            <p>Select a search mode from the left to explore your workspace.</p>
+         </div>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

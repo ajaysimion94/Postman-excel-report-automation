@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="description" content="Write linked operational procedures and maintain typed catalogs in CEMS Studio.">
+  <meta name="theme-color" content="#192329">
+  <title>Documents · CEMS Studio</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/documents.js" defer></script>
+</head>
+<body class="documents-body">
+  <header class="app-header documents-header">
+    <a class="brand" href="/" aria-label="CEMS Studio home"><span class="brand-mark" aria-hidden="true">c.</span><span>CEMS Studio<span class="brand-subtitle">DOCUMENTS</span></span></a>
+    <label class="documents-global-search"><span aria-hidden="true">⌕</span><input id="documents-search" type="search" placeholder="Find an OPD, type, or record" aria-label="Search Documents"></label>
+    <a href="/documents/help" class="quiet-button">OPD help</a>
+    <a href="/search" class="quiet-button">Search explorer</a>
+    <a href="/" class="quiet-button">Back to Studio</a>
+  </header>
+
+  <div class="documents-shell">
+    <aside class="documents-sidebar" aria-label="Documents navigation">
+      <div class="documents-mode-tabs" role="tablist" aria-label="Document areas">
+        <button id="mode-opds" role="tab" aria-selected="true" data-mode="opds"><span>OPDs</span><small id="opd-count">0</small></button>
+        <button id="mode-catalog" role="tab" aria-selected="false" data-mode="catalog"><span>Catalog</span><small id="catalog-count">0</small></button>
+      </div>
+      <div class="documents-sidebar-heading">
+        <div><span id="sidebar-eyebrow">PROCEDURES</span><strong id="sidebar-title">Operational documents</strong></div>
+        <button id="create-item" class="icon-button" aria-label="Create OPD" title="Create OPD">＋</button>
+      </div>
+      <div id="catalog-subtabs" class="documents-subtabs" role="tablist" aria-label="Catalog content" hidden>
+        <button role="tab" aria-selected="true" data-catalog-mode="records">Records</button>
+        <button role="tab" aria-selected="false" data-catalog-mode="types">Types</button>
+      </div>
+      <nav id="documents-list" class="documents-list" aria-label="Documents"><div class="documents-list-loading"><span></span>Reading workspace…</div></nav>
+      <div class="documents-sidebar-footer"><span class="status-dot"></span><span id="workspace-label">Local workspace</span></div>
+    </aside>
+
+    <main id="documents-main" class="documents-main" tabindex="-1">
+      <section class="documents-empty">
+        <span class="documents-empty-mark" aria-hidden="true">¶</span>
+        <div><span class="eyebrow">DOCUMENTS</span><h1>Procedures and structured knowledge, together.</h1><p>Write an operational procedure or define the types and records your APIs work with.</p></div>
+        <div class="documents-empty-actions"><button class="primary-button" data-empty-create="opd">Create an OPD</button><button class="outline-button" data-empty-create="type">Define a catalog type</button></div>
+      </section>
+    </main>
+  </div>
+
+  <div id="documents-toast" class="toast documents-toast" role="status" hidden></div>
+</body>
+</html>

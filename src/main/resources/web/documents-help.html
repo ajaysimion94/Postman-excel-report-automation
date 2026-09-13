@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="description" content="Help for writing operational procedure documents in CEMS Studio.">
+  <meta name="theme-color" content="#192329">
+  <title>OPD help · CEMS Studio</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body class="documents-body">
+  <header class="app-header documents-header">
+    <a class="brand" href="/" aria-label="CEMS Studio home"><span class="brand-mark" aria-hidden="true">c.</span><span>CEMS Studio<span class="brand-subtitle">DOCUMENTS</span></span></a>
+    <span class="documents-help-header-label">OPD writing reference</span>
+    <a href="/documents" class="quiet-button">Back to Documents</a>
+    <a href="/" class="quiet-button">Back to Studio</a>
+  </header>
+
+  <main class="documents-help-main">
+    <article class="documents-help-intro">
+      <span class="eyebrow">OPERATIONAL PROCEDURE DOCUMENTS</span>
+      <h1>Write procedures people can run.</h1>
+      <p>OPDs are normal Markdown files. Keep each procedure focused, link the work around it, and let the preview show the document as readers will see it.</p>
+      <div class="documents-help-actions"><a class="primary-button" href="/documents">Open Documents</a><a class="outline-button" href="#markdown">Markdown reference</a></div>
+    </article>
+
+    <section class="documents-help-grid" aria-label="OPD help topics">
+      <section class="documents-help-section">
+        <span class="eyebrow">01 · START A PROCEDURE</span>
+        <h2>One purpose, clear ownership</h2>
+        <p>Use a short title, state when the procedure applies, and give each action a result that can be checked.</p>
+        <pre><code># Release deployment
+
+## When to use this
+Deploying the approved release to production.
+
+## Procedure
+1. Confirm the release ticket is approved.
+2. Run the deployment pipeline.
+3. Verify the health endpoint returns 200.</code></pre>
+      </section>
+
+      <section class="documents-help-section">
+        <span class="eyebrow">02 · SAVE AND PREVIEW</span>
+        <h2>Write without a save button</h2>
+        <p>OPDs save shortly after you stop typing. Use <strong>Edit</strong> for a focused writing surface, <strong>Split</strong> to write beside the rendered result, or <strong>Preview</strong> to read the final document.</p>
+        <p>If another editor changes the same file, CEMS Studio stops the save and asks you to reconcile the two versions.</p>
+      </section>
+
+      <section class="documents-help-section" id="markdown">
+        <span class="eyebrow">03 · MARKDOWN REFERENCE</span>
+        <h2>Use the structure readers need</h2>
+        <table class="documents-help-table">
+          <thead><tr><th>Write</th><th>Result</th></tr></thead>
+          <tbody>
+            <tr><td><code># Heading</code></td><td>A main section heading</td></tr>
+            <tr><td><code>## Heading</code></td><td>A nested section heading</td></tr>
+            <tr><td><code>- Step</code></td><td>A bulleted list item</td></tr>
+            <tr><td><code>1. Step</code></td><td>A numbered procedure step</td></tr>
+            <tr><td><code>- [ ] Check</code></td><td>An unchecked task</td></tr>
+            <tr><td><code>**important**</code></td><td>Bold text</td></tr>
+            <tr><td><code>`command`</code></td><td>Inline code</td></tr>
+            <tr><td><code>&gt; Note</code></td><td>A quoted note</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="documents-help-section">
+        <span class="eyebrow">04 · CONNECT PROCEDURES</span>
+        <h2>Link related OPDs</h2>
+        <p>Write a note link with double brackets. Links use the OPD title or its Markdown filename. The destination OPD lists every procedure that links back to it.</p>
+        <pre><code>Before beginning, complete [[Release checklist]].
+
+For an alternate label, write
+[[Release checklist|the release checklist]].</code></pre>
+        <p>Links inside fenced code blocks are treated as examples and do not create backlinks.</p>
+      </section>
+
+      <section class="documents-help-section documents-help-wide">
+        <span class="eyebrow">05 · WORK WITH CATALOGS</span>
+        <h2>Keep procedure knowledge and structured data together</h2>
+        <div class="documents-help-columns">
+          <div><strong>Types</strong><p>Define reusable classes or interfaces, their fields, relationships, inherited fields, and API methods.</p></div>
+          <div><strong>Records</strong><p>Create concrete data from a type. Table view is the default, and objects or arrays open as nested tables.</p></div>
+          <div><strong>JSON</strong><p>Use JSON view for bulk or precise edits. The draft must be valid JSON before it can be saved.</p></div>
+        </div>
+      </section>
+    </section>
+  </main>
+</body>
+</html>

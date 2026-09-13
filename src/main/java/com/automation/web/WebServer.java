@@ -20,12 +20,16 @@ public final class WebServer implements AutoCloseable {
     private final ExecutorService connections = Executors.newFixedThreadPool(8);
     private final WorkspaceFiles files;
     private final ReportService reports;
+    private final DocumentsService documents;
+    private final SearchService searchService;
     private final ObjectMapper mapper = new ObjectMapper();
     private final String token = UUID.randomUUID().toString();
 
     public WebServer(Path workspace, Path env, int port) throws IOException {
         files = new WorkspaceFiles(workspace);
         reports = new ReportService(files, env);
+        documents = new DocumentsService(files, mapper);
+        searchService = new SearchService(files, documents);
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
         server.setExecutor(connections);
         server.createContext("/", this::handle);
@@ -110,7 +114,7 @@ public final class WebServer implements AutoCloseable {
         switch (method + " " + path) {
             case "GET /api/session" -> json(exchange, 200, Map.of("token", token,
                     "workspace", files.root().getFileName().toString(), "root", files.root().toString()));
-            case "GET /api/files" -> json(exchange, 200, files.list());
+            case "GET /api/files" -> json(exchange, 200, files.studioList());
             case "GET /api/file" -> json(exchange, 200, files.read(query.get("path")));
             case "PUT /api/file" -> {
                 JsonNode body = body(exchange);
@@ -194,6 +198,17 @@ public final class WebServer implements AutoCloseable {
             }
             case "GET /api/runs" -> json(exchange, 200, reports.history());
             case "GET /api/run" -> json(exchange, 200, reports.get(query.get("id")));
+            case "GET /api/search" -> json(exchange, 200, searchService.search(query.get("q"), query.get("type"), query.get("in")));
+            case "POST /api/search/query" -> json(exchange, 200, searchService.executeQuery(body(exchange)));
+            case "GET /api/search/documents" -> json(exchange, 200, searchService.searchDocuments(query.get("q")));
+            case "GET /api/search/catalogs" -> json(exchange, 200, searchService.searchCatalogs(query.get("q")));
+            case "POST /api/search/export" -> {
+                byte[] excel = searchService.exportToExcel(body(exchange));
+                exchange.getResponseHeaders().set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+                exchange.getResponseHeaders().set("Content-Disposition", "attachment; filename=\"search-results.xlsx\"");
+                exchange.sendResponseHeaders(200, excel.length);
+                exchange.getResponseBody().write(excel);
+            }
             case "GET /api/workbook" -> json(exchange, 200, WorkbookPreview.read(reportPath(query.get("path")),
                     number(query, "sheet", 0), number(query, "offset", 0), number(query, "limit", 200)));
             case "GET /api/download" -> {
@@ -202,6 +217,25 @@ public final class WebServer implements AutoCloseable {
                 exchange.getResponseHeaders().set("Content-Disposition", "attachment; filename*=UTF-8''" + URLEncoder.encode(file.getFileName().toString(), StandardCharsets.UTF_8).replace("+", "%20"));
                 exchange.sendResponseHeaders(200, Files.size(file));
                 Files.copy(file, exchange.getResponseBody());
+            }
+            case "GET /api/documents" -> json(exchange, 200, documents.summary());
+            case "GET /api/documents/note" -> json(exchange, 200, documents.getNote(query.get("path")));
+            case "POST /api/documents/note" -> json(exchange, 201, documents.createNote(body(exchange)));
+            case "PUT /api/documents/note" -> json(exchange, 200, documents.saveNote(body(exchange)));
+            case "DELETE /api/documents/note" -> { documents.deleteNote(query.get("path")); json(exchange, 200, Map.of("message", "Moved to trash.")); }
+            case "GET /api/documents/types" -> json(exchange, 200, documents.listTypes());
+            case "GET /api/documents/type" -> json(exchange, 200, documents.getType(query.get("id")));
+            case "POST /api/documents/types" -> json(exchange, 201, documents.createType(body(exchange)));
+            case "PUT /api/documents/types" -> json(exchange, 200, documents.updateType(body(exchange)));
+            case "DELETE /api/documents/types" -> { documents.deleteType(query.get("id")); json(exchange, 200, Map.of("message", "Moved to trash.")); }
+            case "GET /api/documents/records" -> json(exchange, 200, documents.listRecords());
+            case "POST /api/documents/records" -> json(exchange, 201, documents.createRecord(body(exchange)));
+            case "PUT /api/documents/records" -> json(exchange, 200, documents.updateRecord(body(exchange)));
+            case "DELETE /api/documents/records" -> { documents.deleteRecord(query.get("id")); json(exchange, 200, Map.of("message", "Moved to trash.")); }
+            case "POST /api/documents/discover" -> json(exchange, 200, documents.discover(query.get("collection")));
+            case "POST /api/documents/export" -> {
+                Path exportPath = documents.exportExcel();
+                json(exchange, 200, Map.of("path", files.relative(exportPath)));
             }
             default -> throw new WebException(404, "This operation is not available.");
         }
@@ -218,7 +252,12 @@ public final class WebServer implements AutoCloseable {
         if (!exchange.getRequestMethod().equals("GET")) throw new WebException(405, "Use GET to load this page.");
         String resource = switch (path) {
             case "/", "/index.html" -> "index.html";
+            case "/search", "/search.html" -> "search.html";
+            case "/documents", "/documents.html", "/catalog.html" -> "documents.html";
+            case "/documents/help", "/documents-help.html" -> "documents-help.html";
             case "/app.js" -> "app.js";
+            case "/search.js" -> "search.js";
+            case "/documents.js", "/catalog.js" -> "documents.js";
             case "/guided-workflow.js" -> "guided-workflow.js";
             case "/quick-query-assist.js" -> "quick-query-assist.js";
             case "/styles.css" -> "styles.css";

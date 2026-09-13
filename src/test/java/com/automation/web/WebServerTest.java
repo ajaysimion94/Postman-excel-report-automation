@@ -85,8 +85,12 @@ class WebServerTest {
         assertEquals(200, request("GET", "/app.js", null).statusCode());
         assertEquals(200, request("GET", "/guided-workflow.js", null).statusCode());
         assertEquals(200, request("GET", "/quick-query-assist.js", null).statusCode());
+        assertEquals(200, request("GET", "/documents", null).statusCode());
+        assertEquals(200, request("GET", "/documents.js", null).statusCode());
+        assertEquals(200, request("GET", "/documents/help", null).statusCode());
         var filesResponse = request("GET", "/api/files", null);
         assertTrue(filesResponse.body().contains("collections/local.json"));
+        assertFalse(filesResponse.body().contains("documents/opds"));
         assertEquals("no-store, max-age=0", filesResponse.headers().firstValue("Cache-Control").orElseThrow());
         assertEquals(404, request("GET", "/.env", null).statusCode());
     }

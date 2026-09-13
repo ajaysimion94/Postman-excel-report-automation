@@ -4,6 +4,23 @@ Report Studio brings this project's existing Postman execution and Excel reporti
 engine into a local browser workspace. It runs from the same Java application as the
 CLI and needs no Node.js installation, database, CDN, or frontend build step.
 
+## Documents workspace
+
+Open **Documents** from the application header to keep operational procedure documents
+and structured API knowledge beside the report workspace. OPDs are ordinary Markdown
+files under `documents/opds/`, so they can also be edited with Obsidian or another text
+editor. The browser provides Edit, Split, and Preview modes, saves Markdown after a
+short pause, resolves `[[note links]]`, and lists backlinks. A revision check stops an
+external file change from being silently overwritten.
+
+The Catalog area separates reusable **Types** from their **Records**. Types define
+fields, inheritance, composition, array item types, and optional API methods. Records
+use those definitions for validation and display objects and arrays as nested tables.
+Table view is the default; JSON view edits the same draft and must contain valid JSON
+before it can be saved. Catalog changes use an explicit Save action. Files live under
+`documents/catalogs/types/` and `documents/catalogs/records/`, and deleted items move
+to the recoverable `.web-trash` folder.
+
 ## Quick run in Guided mode
 
 Enter a query in the single-line Quick run search bar, then click **Run query** or press **Enter**:
@@ -49,7 +66,7 @@ java -jar target/postman-excel-runner-1.0.0.jar --web \
 ```
 
 The workspace directory must already exist. The application creates its
-`collections`, `filters`, `queries`, and `reports` subdirectories when needed. The default
+`collections`, `filters`, `queries`, `reports`, and `documents` subdirectories when needed. The default
 environment file is `.env` inside the selected workspace. Environment variables,
 credential profiles, filter overrides, HTTP settings, and Postman compatibility
 rules use the existing Java engine.
@@ -170,7 +187,7 @@ OAuth 2 flows, pre-request/test scripts, GraphQL mode, or local file uploads. Te
 multipart form fields are supported; imported file fields produce a clear error rather
 than reading an arbitrary path from disk.
 
-Files must remain within their collection, filter, or report area when moved.
+Files must remain within their collection, filter, query, report, or document area when moved.
 Renaming or moving reports updates saved run references. Text files are limited to
 5 MB. Hidden files, symbolic links, and paths outside the workspace are excluded.
 The explorer lists up to 5,000 entries and 12 folder levels.

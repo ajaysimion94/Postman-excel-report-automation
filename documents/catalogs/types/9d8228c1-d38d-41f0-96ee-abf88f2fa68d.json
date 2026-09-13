@@ -1,0 +1,13 @@
+{
+  "id" : "9d8228c1-d38d-41f0-96ee-abf88f2fa68d",
+  "name" : "New Type",
+  "kind" : "class",
+  "extendsId" : null,
+  "description" : "",
+  "category" : "General",
+  "implementedBy" : [ ],
+  "fields" : [ ],
+  "methods" : [ ],
+  "linkedCollections" : [ ],
+  "linkedRequests" : [ ]
+}

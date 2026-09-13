@@ -8,7 +8,8 @@ This guide is for implementation details, architecture, and testing strategy.
 The static client lives in `src/main/resources/web` and is packaged into the existing
 executable JAR. No additional production dependencies or frontend build are required.
 
-- `WorkspaceFiles` limits file operations to collections, filters, and reports,
+- `WorkspaceFiles` limits file operations to collections, filters, queries, reports,
+  OPD Markdown, and catalog JSON,
   rejects symbolic links and traversal, uses content revisions for writes, and
   moves removed files to recoverable trash.
 - `ReportService` parses editor snapshots, reuses the existing validators,
@@ -23,9 +24,11 @@ executable JAR. No additional production dependencies or frontend build are requ
   `Paragraph` preserves sentence layout instead of applying `TEXT`'s label inference.
 
 Read operations include `/api/session`, `/api/files`, `/api/file`, `/api/collection`,
-`/api/runs`, `/api/run`, `/api/workbook`, and `/api/download`. Mutations use
+`/api/runs`, `/api/run`, `/api/workbook`, `/api/download`, and the `/api/documents`
+note/type/record endpoints. Mutations use
 `PUT /api/file` or POST to `/api/folder`, `/api/move`, `/api/trash`, `/api/validate`,
-and `/api/runs`. Validate is non-mutating despite using POST for editor contents.
+`/api/runs`, and the Documents create, update, delete, discover, and export endpoints.
+Validate is non-mutating despite using POST for editor contents.
 Every request checks local Host/Origin headers; non-GET requests also require the
 `X-Workspace-Token` from `/api/session`. There is no CORS allowance or remote bind option.
 
@@ -239,6 +242,12 @@ Run all tests:
 ./mvnw -q test
 ```
 
+Run the browser-only Documents and existing client suites:
+
+```bash
+node --test src/test/web/documents.test.cjs src/test/web/app.test.cjs
+```
+
 Focused tests:
 
 ```bash
@@ -259,5 +268,6 @@ Test classes:
 | `RowConditionEvaluatorTest` | All 18 operators, AND/OR logic, missing fields, DATE_PRESET, DATE_RANGE, custom format |
 | `ExcelReportGeneratorTest` | Sheet structure, row filtering applied, custom table sheet generation |
 | `CredentialLoaderFilterOverrideTest` | filter auth/vars precedence over `.env` |
+| `DocumentsServiceTest` | Markdown notes, backlinks, revisions, catalog inheritance, relationships, and typed records |
 | `PostmanCollectionParserTest` | Postman collection JSON parsing |
 | `VariableResolverTest` | Variable placeholder substitution |
