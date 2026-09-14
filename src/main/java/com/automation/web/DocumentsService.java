@@ -10,6 +10,7 @@ import com.automation.web.documents.CatalogType;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
@@ -18,6 +19,7 @@ import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.net.URI;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -36,6 +38,7 @@ import java.util.regex.Pattern;
 /** File-backed OPD notes and typed catalog data for the Documents workspace. */
 public final class DocumentsService {
     private static final String OPDS = "documents/opds/";
+    private static final String BOOKMARKS = "documents/bookmarks/bookmarks.json";
     private static final String TYPES = "documents/catalogs/types/";
     private static final String RECORDS = "documents/catalogs/records/";
     private static final Pattern WIKI_LINK = Pattern.compile("\\[\\[([^]#|]+)(?:#[^]|]+)?(?:\\|([^]]+))?]]");
@@ -52,7 +55,67 @@ public final class DocumentsService {
     }
 
     public Map<String, Object> summary() throws IOException {
-        return Map.of("notes", listNotes(), "types", listTypes(), "records", listRecords());
+        return Map.of("notes", listNotes(), "bookmarks", listBookmarks(), "types", listTypes(), "records", listRecords());
+    }
+
+    public List<Map<String, Object>> listBookmarks() throws IOException {
+        BookmarkStore store = bookmarks();
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (JsonNode bookmark : store.entries()) result.add(bookmarkMap(bookmark, store.revision()));
+        result.sort((a, b) -> Objects.toString(a.get("title")).compareToIgnoreCase(Objects.toString(b.get("title"))));
+        return result;
+    }
+
+    public Map<String, Object> createBookmark(JsonNode body) throws IOException {
+        BookmarkStore store = bookmarks();
+        ObjectNode bookmark = bookmark(body, UUID.randomUUID().toString());
+        store.entries().add(bookmark);
+        return bookmarkMap(bookmark, writeBookmarks(store.entries(), store.revision()).revision());
+    }
+
+    public Map<String, Object> updateBookmark(JsonNode body) throws IOException {
+        String id = required(body, "id");
+        BookmarkStore store = bookmarks();
+        for (int index = 0; index < store.entries().size(); index++) if (id.equals(store.entries().get(index).path("id").asText())) {
+            ObjectNode bookmark = bookmark(body, id);
+            store.entries().set(index, bookmark);
+            return bookmarkMap(bookmark, writeBookmarks(store.entries(), required(body, "revision")).revision());
+        }
+        throw new WebException(404, "Bookmark not found.");
+    }
+
+    public void deleteBookmark(String id) throws IOException {
+        BookmarkStore store = bookmarks();
+        for (int index = 0; index < store.entries().size(); index++) if (id.equals(store.entries().get(index).path("id").asText())) {
+            store.entries().remove(index); writeBookmarks(store.entries(), store.revision()); return;
+        }
+        throw new WebException(404, "Bookmark not found.");
+    }
+
+    public int importBookmarks(JsonNode body) throws IOException {
+        JsonNode imported = body.path("bookmarks");
+        if (!imported.isArray() || imported.size() > 5_000) throw new WebException(400, "Import up to 5,000 valid bookmarks at a time.");
+        BookmarkStore store = bookmarks(); int added = 0;
+        Set<String> existing = new HashSet<>();
+        for (JsonNode item : store.entries()) existing.add(item.path("url").asText() + "\u0000" + item.path("folder").asText());
+        for (JsonNode item : imported) {
+            ObjectNode bookmark = bookmark(item, UUID.randomUUID().toString());
+            String key = bookmark.path("url").asText() + "\u0000" + bookmark.path("folder").asText();
+            if (existing.add(key)) { store.entries().add(bookmark); added++; }
+        }
+        if (added > 0) writeBookmarks(store.entries(), store.revision());
+        return added;
+    }
+
+    public String exportBookmarksHtml() throws IOException {
+        StringBuilder html = new StringBuilder("<!DOCTYPE NETSCAPE-Bookmark-file-1>\n<META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html; charset=UTF-8\">\n<TITLE>Bookmarks</TITLE>\n<H1>Bookmarks</H1>\n<DL><p>\n");
+        String current = null;
+        for (Map<String, Object> item : listBookmarks()) {
+            String folder = Objects.toString(item.get("folder"), "Imported");
+            if (!folder.equals(current)) { if (current != null) html.append("</DL><p>\n"); current = folder; html.append("<DT><H3>").append(html(folder)).append("</H3>\n<DL><p>\n"); }
+            html.append("<DT><A HREF=\"").append(html(Objects.toString(item.get("url")))).append("\">").append(html(Objects.toString(item.get("title")))).append("</A>\n");
+        }
+        return html.append("</DL><p>\n</DL><p>\n").toString();
     }
 
     public List<Map<String, Object>> listNotes() throws IOException {
@@ -272,6 +335,40 @@ public final class DocumentsService {
         }
         return output;
     }
+
+    private BookmarkStore bookmarks() throws IOException {
+        Path path = files.resolve(BOOKMARKS);
+        if (!Files.exists(path)) return new BookmarkStore(mapper.createArrayNode(), null);
+        WorkspaceFiles.Document document = files.read(BOOKMARKS);
+        try {
+            JsonNode value = mapper.readTree(document.content());
+            if (!value.isArray()) throw new WebException(400, "Bookmarks storage is not a list.");
+            return new BookmarkStore((ArrayNode) value, document.revision());
+        } catch (com.fasterxml.jackson.core.JsonProcessingException error) { throw new WebException(400, "Bookmarks storage could not be read."); }
+    }
+
+    private WorkspaceFiles.Document writeBookmarks(ArrayNode entries, String revision) throws IOException {
+        return files.save(BOOKMARKS, mapper.writerWithDefaultPrettyPrinter().writeValueAsString(entries) + "\n", revision);
+    }
+
+    private ObjectNode bookmark(JsonNode source, String id) {
+        String title = source.path("title").asText("").trim();
+        String url = source.path("url").asText("").trim();
+        String folder = source.path("folder").asText("Imported").trim();
+        if (title.isBlank() || title.length() > 250) throw new WebException(400, "Enter a bookmark title up to 250 characters.");
+        if (folder.isBlank() || folder.length() > 300) throw new WebException(400, "Enter a folder name up to 300 characters.");
+        if (url.length() > 4_096) throw new WebException(400, "Bookmark URLs must be 4,096 characters or shorter.");
+        try { URI uri = URI.create(url); if (!Set.of("http", "https").contains(Objects.toString(uri.getScheme(), "").toLowerCase(Locale.ROOT)) || uri.getHost() == null) throw new IllegalArgumentException(); }
+        catch (IllegalArgumentException error) { throw new WebException(400, "Bookmarks must use a valid http or https URL."); }
+        return mapper.createObjectNode().put("id", id).put("title", title).put("url", url).put("folder", folder).put("createdAt", Instant.now().toString());
+    }
+
+    private Map<String, Object> bookmarkMap(JsonNode bookmark, String revision) {
+        Map<String, Object> result = mapper.convertValue(bookmark, LinkedHashMap.class); result.put("revision", revision); return result;
+    }
+
+    private static String html(String value) { return value.replace("&", "&amp;").replace("\"", "&quot;").replace("<", "&lt;").replace(">", "&gt;"); }
+    private record BookmarkStore(ArrayNode entries, String revision) {}
 
     private void validateType(CatalogType candidate, String replacingId) throws IOException {
         if (candidate.name().isBlank()) throw new WebException(400, "Enter a type name.");

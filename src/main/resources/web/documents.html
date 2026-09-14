@@ -22,6 +22,7 @@
     <aside class="documents-sidebar" aria-label="Documents navigation">
       <div class="documents-mode-tabs" role="tablist" aria-label="Document areas">
         <button id="mode-opds" role="tab" aria-selected="true" data-mode="opds"><span>OPDs</span><small id="opd-count">0</small></button>
+        <button id="mode-bookmarks" role="tab" aria-selected="false" data-mode="bookmarks"><span>Bookmarks</span><small id="bookmark-count">0</small></button>
         <button id="mode-catalog" role="tab" aria-selected="false" data-mode="catalog"><span>Catalog</span><small id="catalog-count">0</small></button>
       </div>
       <div class="documents-sidebar-heading">
@@ -45,6 +46,7 @@
     </main>
   </div>
 
+  <input id="bookmark-import" type="file" accept=".html,.htm,text/html" hidden>
   <div id="documents-toast" class="toast documents-toast" role="status" hidden></div>
 </body>
 </html>

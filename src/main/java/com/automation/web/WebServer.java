@@ -219,6 +219,11 @@ public final class WebServer implements AutoCloseable {
                 Files.copy(file, exchange.getResponseBody());
             }
             case "GET /api/documents" -> json(exchange, 200, documents.summary());
+            case "GET /api/documents/bookmarks/export" -> html(exchange, "cems-bookmarks.html", documents.exportBookmarksHtml());
+            case "POST /api/documents/bookmarks/import" -> json(exchange, 200, Map.of("added", documents.importBookmarks(body(exchange))));
+            case "POST /api/documents/bookmarks" -> json(exchange, 201, documents.createBookmark(body(exchange)));
+            case "PUT /api/documents/bookmarks" -> json(exchange, 200, documents.updateBookmark(body(exchange)));
+            case "DELETE /api/documents/bookmarks" -> { documents.deleteBookmark(query.get("id")); json(exchange, 200, Map.of("message", "Moved bookmark to trash.")); }
             case "GET /api/documents/note" -> json(exchange, 200, documents.getNote(query.get("path")));
             case "POST /api/documents/note" -> json(exchange, 201, documents.createNote(body(exchange)));
             case "PUT /api/documents/note" -> json(exchange, 200, documents.saveNote(body(exchange)));
@@ -328,6 +333,14 @@ public final class WebServer implements AutoCloseable {
         exchange.getResponseHeaders().set("Cache-Control", "no-store, max-age=0");
         exchange.getResponseHeaders().set("Pragma", "no-cache");
         exchange.sendResponseHeaders(status, bytes.length);
+        exchange.getResponseBody().write(bytes);
+    }
+
+    private void html(HttpExchange exchange, String filename, String value) throws IOException {
+        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
+        exchange.getResponseHeaders().set("Content-Disposition", "attachment; filename=\"" + filename + "\"");
+        exchange.sendResponseHeaders(200, bytes.length);
         exchange.getResponseBody().write(bytes);
     }
 

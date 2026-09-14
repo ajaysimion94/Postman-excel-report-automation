@@ -5,9 +5,9 @@ const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character =>
 const encode = encodeURIComponent;
 const clone = value => JSON.parse(JSON.stringify(value));
 const state = {
-  token:'', summary:{notes:[],types:[],records:[]}, mode:'opds', catalogMode:'records', filter:'', active:null,
+  token:'', summary:{notes:[],bookmarks:[],types:[],records:[]}, mode:'opds', catalogMode:'records', filter:'', active:null,
   note:null, noteView:innerWidth < 880 ? 'edit' : 'split', noteDirty:false, noteSaving:false, noteSavePromise:null, noteTimer:null,
-  catalog:null, catalogKind:null, catalogView:'table', catalogDirty:false, jsonDraft:'', typeView:null
+  catalog:null, catalogKind:null, catalogView:'table', catalogDirty:false, jsonDraft:'', typeView:null, bookmark:null, bookmarkDirty:false
 };
 let toastTimer;
 
@@ -47,9 +47,11 @@ async function initialize() {
     const open = params.get('open');
     if (open) {
       const note = state.summary.notes.find(item => item.path === open || item.id === open);
+      const bookmark = state.summary.bookmarks.find(item => item.id === open);
       const type = state.summary.types.find(item => item.id === open);
       const record = state.summary.records.find(item => item.id === open);
       if (note) await openNote(note.path);
+      else if (bookmark) await openBookmark(bookmark.id);
       else if (type) await openCatalog('type', type.id);
       else if (record) await openCatalog('record', record.id);
     } else renderAll();
@@ -68,47 +70,51 @@ function renderAll() { renderSidebar(); renderMain(); }
 
 function renderSidebar() {
   $('mode-opds').setAttribute('aria-selected', String(state.mode === 'opds'));
+  $('mode-bookmarks').setAttribute('aria-selected', String(state.mode === 'bookmarks'));
   $('mode-catalog').setAttribute('aria-selected', String(state.mode === 'catalog'));
   $('opd-count').textContent = state.summary.notes.length;
+  $('bookmark-count').textContent = state.summary.bookmarks.length;
   $('catalog-count').textContent = state.summary.types.length + state.summary.records.length;
   $('catalog-subtabs').hidden = state.mode !== 'catalog';
-  $('sidebar-eyebrow').textContent = state.mode === 'opds' ? 'PROCEDURES' : state.catalogMode.toUpperCase();
-  $('sidebar-title').textContent = state.mode === 'opds' ? 'Operational documents' : state.catalogMode === 'records' ? 'Catalog records' : 'Catalog types';
-  $('create-item').title = state.mode === 'opds' ? 'Create OPD' : state.catalogMode === 'records' ? 'Create record' : 'Create type';
+  $('sidebar-eyebrow').textContent = state.mode === 'opds' ? 'PROCEDURES' : state.mode === 'bookmarks' ? 'LINK LIBRARY' : state.catalogMode.toUpperCase();
+  $('sidebar-title').textContent = state.mode === 'opds' ? 'Operational documents' : state.mode === 'bookmarks' ? 'Browser bookmarks' : state.catalogMode === 'records' ? 'Catalog records' : 'Catalog types';
+  $('create-item').title = state.mode === 'opds' ? 'Create OPD' : state.mode === 'bookmarks' ? 'Create bookmark' : state.catalogMode === 'records' ? 'Create record' : 'Create type';
   $('create-item').setAttribute('aria-label', $('create-item').title);
   document.querySelectorAll('[data-catalog-mode]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.catalogMode === state.catalogMode)));
-  const items = state.mode === 'opds' ? state.summary.notes : state.catalogMode === 'records' ? state.summary.records : state.summary.types;
+  const items = state.mode === 'opds' ? state.summary.notes : state.mode === 'bookmarks' ? state.summary.bookmarks : state.catalogMode === 'records' ? state.summary.records : state.summary.types;
   const filtered = items.filter(item => !state.filter || JSON.stringify(item).toLowerCase().includes(state.filter));
   if (!filtered.length) {
-    const noun = state.mode === 'opds' ? 'OPDs' : state.catalogMode;
-    $('documents-list').innerHTML = `<div class="documents-list-empty"><strong>No ${escapeHtml(noun)} found</strong><span>${state.filter ? 'Try another search.' : `Create the first ${state.mode === 'opds' ? 'procedure' : state.catalogMode.slice(0,-1)}.`}</span></div>`;
+    const noun = state.mode === 'opds' ? 'OPDs' : state.mode === 'bookmarks' ? 'bookmarks' : state.catalogMode;
+    $('documents-list').innerHTML = `<div class="documents-list-empty"><strong>No ${escapeHtml(noun)} found</strong><span>${state.filter ? 'Try another search.' : `Create the first ${state.mode === 'opds' ? 'procedure' : state.mode === 'bookmarks' ? 'bookmark' : state.catalogMode.slice(0,-1)}.`}</span></div>`;
     return;
   }
   $('documents-list').innerHTML = filtered.map(item => {
-    const kind = state.mode === 'opds' ? 'note' : state.catalogMode.slice(0,-1);
+    const kind = state.mode === 'opds' ? 'note' : state.mode === 'bookmarks' ? 'bookmark' : state.catalogMode.slice(0,-1);
     const active = state.active === `${kind}:${item.id || item.path}`;
-    const meta = kind === 'note' ? `${item.category || 'Procedure'} · ${(item.tags || []).length} tags`
+    const meta = kind === 'note' ? `${item.category || 'Procedure'} · ${(item.tags || []).length} tags` : kind === 'bookmark' ? `${item.folder} · ${new URL(item.url).host}`
       : kind === 'type' ? `${item.kind || 'class'} · ${(item.fields || []).length} fields`
       : typeName(item.typeId);
     const openId = kind === 'note' ? item.path : item.id;
-    return `<button class="documents-list-item ${active ? 'active' : ''}" data-open-kind="${kind}" data-open-id="${escapeHtml(openId)}"><span class="documents-item-symbol" aria-hidden="true">${kind === 'note' ? '¶' : kind === 'type' ? '{ }' : '▦'}</span><span><strong>${escapeHtml(item.title || item.name)}</strong><small>${escapeHtml(meta)}</small></span></button>`;
+    return `<button class="documents-list-item ${active ? 'active' : ''}" data-open-kind="${kind}" data-open-id="${escapeHtml(openId)}"><span class="documents-item-symbol" aria-hidden="true">${kind === 'note' ? '¶' : kind === 'bookmark' ? '↗' : kind === 'type' ? '{ }' : '▦'}</span><span><strong>${escapeHtml(item.title || item.name)}</strong><small>${escapeHtml(meta)}</small></span></button>`;
   }).join('');
 }
 
 function renderMain() {
   if (state.note) renderNote();
+  else if (state.bookmark) renderBookmark();
   else if (state.catalog) renderCatalog();
 }
 
 async function changeMode(mode) {
   if (!await settleCurrentDraft()) return;
   state.mode = mode;
-  state.note = null; state.catalog = null; state.active = null;
+  state.note = null; state.catalog = null; state.bookmark = null; state.bookmarkDirty = false; state.active = null;
   renderSidebar();
   renderEmpty();
 }
 
 function renderEmpty() {
+  if (state.mode === 'bookmarks') { $('documents-main').innerHTML = `<section class="documents-empty"><span class="documents-empty-mark" aria-hidden="true">↗</span><div><span class="eyebrow">BROWSER BOOKMARKS</span><h1>Keep useful links with your working notes.</h1><p>Import your browser bookmark HTML file, then maintain those links in the local workspace.</p></div><div class="documents-empty-actions"><button class="primary-button" data-empty-create="bookmark">Add bookmark</button><button class="outline-button" data-import-bookmarks>Import browser bookmarks</button></div></section>`; return; }
   $('documents-main').innerHTML = `<section class="documents-empty"><span class="documents-empty-mark" aria-hidden="true">${state.mode === 'opds' ? '¶' : '{ }'}</span><div><span class="eyebrow">${state.mode === 'opds' ? 'OPERATIONAL PROCEDURES' : 'STRUCTURED KNOWLEDGE'}</span><h1>${state.mode === 'opds' ? 'Write procedures that connect.' : 'Model types, then work with their records.'}</h1><p>${state.mode === 'opds' ? 'Create a Markdown OPD and link related notes with [[double brackets]].' : 'Define reusable fields and relationships, then maintain data in nested tables.'}</p></div><div class="documents-empty-actions"><button class="primary-button" data-empty-create="${state.mode === 'opds' ? 'opd' : state.catalogMode.slice(0,-1)}">Create ${state.mode === 'opds' ? 'an OPD' : `a ${state.catalogMode.slice(0,-1)}`}</button></div></section>`;
 }
 
@@ -120,6 +126,7 @@ async function settleCurrentDraft() {
     notify('Save or discard the catalog draft before switching.', true);
     return false;
   }
+  if (state.bookmarkDirty) { notify('Save or discard the bookmark draft before switching.', true); return false; }
   return true;
 }
 
@@ -140,6 +147,28 @@ async function createNote() {
   $('opd-editor')?.focus();
   notify('OPD created. Start writing; changes save automatically.');
 }
+
+async function openBookmark(id) {
+  if (!await settleCurrentDraft()) return;
+  const item = state.summary.bookmarks.find(bookmark => bookmark.id === id); if (!item) return;
+  state.mode='bookmarks'; state.note=null; state.catalog=null; state.bookmark=clone(item); state.bookmarkDirty=false; state.active=`bookmark:${id}`;
+  renderAll(); updateLocation(id);
+}
+
+async function createBookmark() {
+  if (!await settleCurrentDraft()) return;
+  const created = await api('/api/documents/bookmarks', {method:'POST', body:{title:'New bookmark',url:'https://example.com',folder:'Unsorted'}});
+  await refreshSummary(); await openBookmark(created.id); notify('Bookmark created. Update the details, then save.');
+}
+
+function renderBookmark() {
+  const item=state.bookmark;
+  $('documents-main').innerHTML=`<article class="bookmark-workbench"><header class="documents-document-bar"><div class="documents-title"><span class="eyebrow">BOOKMARK · ${escapeHtml(item.folder)}</span><h1>${escapeHtml(item.title)}</h1><span class="documents-path">${escapeHtml(item.url)}</span></div><div class="documents-document-actions"><a class="quiet-button" href="${safeHref(item.url)}" target="_blank" rel="noreferrer">Open link ↗</a><span class="note-save-state ${state.bookmarkDirty?'dirty':''}">${state.bookmarkDirty?'Unsaved draft':'Saved'}</span><button class="primary-button" data-save-bookmark ${state.bookmarkDirty?'':'disabled'}>Save bookmark</button><button class="quiet-button documents-delete" data-delete-current>Move to trash</button></div></header><section class="bookmark-editor"><label><span>Title</span><input data-bookmark-field="title" value="${escapeHtml(item.title)}" maxlength="250"></label><label><span>Website address</span><input data-bookmark-field="url" type="url" value="${escapeHtml(item.url)}" maxlength="4096"></label><label><span>Folder</span><input data-bookmark-field="folder" value="${escapeHtml(item.folder)}" maxlength="300"></label><div class="bookmark-transfer"><div><strong>Browser bookmark file</strong><small>Import Chrome, Edge, Firefox, or Safari HTML bookmarks. Export uses the standard Netscape bookmark format.</small></div><div><button class="outline-button" data-import-bookmarks>Import HTML</button><a class="outline-button" href="/api/documents/bookmarks/export">Export HTML</a></div></div></section></article>`;
+}
+
+async function saveBookmark() { if (!state.bookmark || !state.bookmarkDirty) return; const saved=await api('/api/documents/bookmarks',{method:'PUT',body:state.bookmark}); state.bookmark=clone(saved); state.bookmarkDirty=false; await refreshSummary(); renderBookmark(); notify('Bookmark saved.'); }
+
+function importBookmarks(file) { const reader=new FileReader(); reader.onload=async()=>{ try { const doc=new DOMParser().parseFromString(String(reader.result),'text/html'), entries=[]; const walk=(node,folders=[])=>{ for(const child of node.children){ if(child.tagName==='DT'){ const h=child.querySelector(':scope > H3'),a=child.querySelector(':scope > A'),dl=child.querySelector(':scope > DL'); if(a&&/^https?:\/\//i.test(a.getAttribute('href')||''))entries.push({title:a.textContent.trim()||a.href,url:a.getAttribute('href'),folder:folders.join(' / ')||'Imported'}); if(h&&dl)walk(dl,[...folders,h.textContent.trim()||'Imported']); } else if(child.tagName==='DL')walk(child,folders); }}; walk(doc.body); const result=await api('/api/documents/bookmarks/import',{method:'POST',body:{bookmarks:entries}}); await refreshSummary(); if(state.mode==='bookmarks'&&!state.bookmark)renderEmpty(); notify(`${result.added} bookmark${result.added===1?'':'s'} imported.`); }catch(error){handleError(error);}finally{$('bookmark-import').value='';} }; reader.readAsText(file); }
 
 function renderNote() {
   const note = state.note;
@@ -438,6 +467,9 @@ async function deleteCurrent() {
     const plural = state.catalogKind === 'type' ? 'types' : 'records';
     await api(`/api/documents/${plural}?id=${encode(state.catalog.id)}`, {method:'DELETE'});
     state.catalog = null; state.catalogDirty = false;
+  } else if (state.bookmark) {
+    await api(`/api/documents/bookmarks?id=${encode(state.bookmark.id)}`, {method:'DELETE'});
+    state.bookmark = null; state.bookmarkDirty = false;
   }
   state.active = null; await refreshSummary(); renderEmpty(); notify('Moved to the workspace trash.');
 }
@@ -455,9 +487,11 @@ document.addEventListener('click', event => {
     if (state.catalogDirty) return notify('Save or discard the catalog draft before switching.', true);
     state.catalogMode = catalogMode.dataset.catalogMode; state.catalog = null; state.active = null; renderSidebar(); renderEmpty(); return;
   }
-  const open = event.target.closest('[data-open-kind]'); if (open) return (open.dataset.openKind === 'note' ? openNote(open.dataset.openId) : openCatalog(open.dataset.openKind, open.dataset.openId)).catch(handleError);
-  const emptyCreate = event.target.closest('[data-empty-create]'); if (emptyCreate) return (emptyCreate.dataset.emptyCreate === 'opd' ? createNote() : createCatalog(emptyCreate.dataset.emptyCreate)).catch(handleError);
-  if (event.target.closest('#create-item')) return (state.mode === 'opds' ? createNote() : createCatalog(state.catalogMode.slice(0,-1))).catch(handleError);
+  const open = event.target.closest('[data-open-kind]'); if (open) return (open.dataset.openKind === 'note' ? openNote(open.dataset.openId) : open.dataset.openKind === 'bookmark' ? openBookmark(open.dataset.openId) : openCatalog(open.dataset.openKind, open.dataset.openId)).catch(handleError);
+  const emptyCreate = event.target.closest('[data-empty-create]'); if (emptyCreate) return (emptyCreate.dataset.emptyCreate === 'opd' ? createNote() : emptyCreate.dataset.emptyCreate === 'bookmark' ? createBookmark() : createCatalog(emptyCreate.dataset.emptyCreate)).catch(handleError);
+  if (event.target.closest('#create-item')) return (state.mode === 'opds' ? createNote() : state.mode === 'bookmarks' ? createBookmark() : createCatalog(state.catalogMode.slice(0,-1))).catch(handleError);
+  if (event.target.closest('[data-import-bookmarks]')) return $('bookmark-import').click();
+  if (event.target.closest('[data-save-bookmark]')) return saveBookmark().catch(handleError);
   const noteView = event.target.closest('[data-note-view]'); if (noteView) { state.noteView = noteView.dataset.noteView; renderNote(); return; }
   const catalogView = event.target.closest('[data-catalog-view]'); if (catalogView) return setCatalogView(catalogView.dataset.catalogView).catch(handleError);
   if (event.target.closest('[data-save-catalog]')) return saveCatalog().catch(handleError);
@@ -482,6 +516,7 @@ document.addEventListener('click', event => {
 document.addEventListener('input', event => {
   if (event.target.id === 'documents-search') { state.filter = event.target.value.trim().toLowerCase(); renderSidebar(); return; }
   if (event.target.id === 'opd-editor') { state.note.content = event.target.value; scheduleNoteSave(); return; }
+  if (event.target.dataset.bookmarkField) { state.bookmark[event.target.dataset.bookmarkField]=event.target.value; state.bookmarkDirty=true; const status=document.querySelector('.note-save-state'); if(status){status.textContent='Unsaved draft';status.classList.add('dirty');} const save=document.querySelector('[data-save-bookmark]'); if(save)save.disabled=false; return; }
   if (event.target.id === 'catalog-json') {
     state.jsonDraft = event.target.value; state.catalogDirty = true;
     const validation = $('json-validation');
@@ -510,6 +545,7 @@ document.addEventListener('input', event => {
 });
 
 document.addEventListener('change', event => {
+  if (event.target.id === 'bookmark-import' && event.target.files?.[0]) return importBookmarks(event.target.files[0]);
   if (event.target.dataset.rootField === 'typeId' && state.catalogKind === 'record') {
     state.typeView = null;
     api(`/api/documents/type?id=${encode(state.catalog.typeId)}`).then(type => { state.typeView=type; renderCatalog(); }).catch(handleError);

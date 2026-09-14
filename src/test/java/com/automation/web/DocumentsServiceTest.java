@@ -95,6 +95,24 @@ class DocumentsServiceTest {
         }
     }
 
+    @Test void storesImportsAndExportsBrowserBookmarks() throws Exception {
+        DocumentsService service = service();
+        Map<String, Object> first = service.createBookmark(mapper.valueToTree(Map.of(
+                "title", "Reqres", "url", "https://reqres.in/", "folder", "API references")));
+        assertEquals(1, service.listBookmarks().size());
+        assertTrue(service.exportBookmarksHtml().contains("https://reqres.in/"));
+
+        Map<String, Object> updated = new java.util.LinkedHashMap<>(first);
+        updated.put("title", "Reqres API");
+        assertEquals("Reqres API", service.updateBookmark(mapper.valueToTree(updated)).get("title"));
+        assertEquals(1, service.importBookmarks(mapper.valueToTree(Map.of("bookmarks", List.of(
+                Map.of("title", "PokeAPI", "url", "https://pokeapi.co/", "folder", "API references"),
+                Map.of("title", "Duplicate", "url", "https://reqres.in/", "folder", "API references"))))));
+        assertEquals(2, service.listBookmarks().size());
+        service.deleteBookmark(first.get("id").toString());
+        assertEquals(1, service.listBookmarks().size());
+    }
+
     private DocumentsService service() throws Exception {
         return new DocumentsService(new WorkspaceFiles(workspace), mapper);
     }

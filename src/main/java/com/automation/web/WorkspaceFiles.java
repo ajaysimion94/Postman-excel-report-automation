@@ -20,6 +20,7 @@ final class WorkspaceFiles {
         this.root = root.toRealPath();
         for (String directory : ROOTS) Files.createDirectories(resolve(directory));
         Files.createDirectories(resolve("documents/opds"));
+        Files.createDirectories(resolve("documents/bookmarks"));
         Files.createDirectories(resolve("documents/catalogs/types"));
         Files.createDirectories(resolve("documents/catalogs/records"));
     }
@@ -147,6 +148,7 @@ final class WorkspaceFiles {
         if (!(name.startsWith("collections/") && name.endsWith(".json"))
                 && !((name.startsWith("filters/") || name.startsWith("queries/")) && name.endsWith(".filter"))
                 && !(name.startsWith("documents/opds/") && name.endsWith(".md"))
+                && !(name.equals("documents/bookmarks/bookmarks.json"))
                 && !(name.startsWith("documents/catalogs/types/") && name.endsWith(".json"))
                 && !(name.startsWith("documents/catalogs/records/") && name.endsWith(".json"))) {
             throw new WebException(400, "Open a supported workspace document.");
@@ -159,6 +161,7 @@ final class WorkspaceFiles {
                 || name.startsWith("queries/") && name.endsWith(".filter")
                 || name.startsWith("reports/") && name.endsWith(".xlsx")
                 || name.startsWith("documents/opds/") && name.endsWith(".md")
+                || name.equals("documents/bookmarks/bookmarks.json")
                 || name.startsWith("documents/catalogs/types/") && name.endsWith(".json")
                 || name.startsWith("documents/catalogs/records/") && name.endsWith(".json");
     }
