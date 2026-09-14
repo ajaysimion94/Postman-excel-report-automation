@@ -37,14 +37,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
     
-    document.querySelectorAll('#search-tabs button').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            document.querySelectorAll('#search-tabs button').forEach(b => b.classList.remove('active'));
-            e.target.classList.add('active');
-            currentMode = e.target.dataset.mode;
-            updateSidebarFilters();
-            performSearch();
-        });
+    $('search-mode').addEventListener('change', (e) => {
+        currentMode = e.target.value;
+        updateSidebarFilters();
+        performSearch();
     });
 
     $('export-btn').addEventListener('click', exportExcel);
@@ -138,13 +134,18 @@ function renderFiles(res) {
         container.innerHTML = '<div class="empty-state"><h2>No files found</h2></div>';
         return;
     }
-    
-    let html = '<div class="file-results-list">';
+
+    let html = `<div class="file-results-list" role="list" aria-label="Workspace files">
+        <div class="file-results-header" aria-hidden="true">
+            <span>Name</span><span>Location</span><span>Type</span>
+        </div>`;
     for (const f of res.results) {
-        html += `<div class="search-card">
-            <h3>${escapeHtml(f.name)} <span class="file-type-badge">${escapeHtml(f.type)}</span></h3>
-            <div class="search-path">${escapeHtml(f.path)}</div>`;
-            
+        const type = String(f.type || 'file');
+        const icon = type === 'collection' ? '{ }' : type === 'report' ? '▤' : type === 'query' ? '⌕' : 'ƒ';
+        html += `<article class="file-result-row" role="listitem">
+            <div class="file-result-name"><span class="file-result-icon ${escapeHtml(type)}" aria-hidden="true">${icon}</span><strong title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</strong></div>
+            <div class="file-result-path" title="${escapeHtml(f.path)}">${escapeHtml(f.path)}</div>
+            <span class="file-type-badge">${escapeHtml(type)}</span>`;
         if (f.highlights && f.highlights.length > 0) {
             html += `<div class="search-highlights">`;
             for (const h of f.highlights) {
@@ -152,7 +153,7 @@ function renderFiles(res) {
             }
             html += `</div>`;
         }
-        html += `</div>`;
+        html += `</article>`;
     }
     html += '</div>';
     container.innerHTML = html;

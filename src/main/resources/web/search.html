@@ -10,24 +10,27 @@
 </head>
 <body>
   <header class="app-header">
-    <a class="brand" href="/" aria-label="CEMS Studio home">
+    <a class="brand" href="/" aria-label="CEMS workbook home">
       <span class="brand-mark" aria-hidden="true">c.</span>
-      <span>CEMS Studio<span class="brand-subtitle">API → EXCEL</span></span>
+      <span>CEMS workbook<span class="brand-subtitle">WORKSPACE</span></span>
     </a>
     <div class="global-search-container">
       <input type="search" id="global-search" class="global-search-input" placeholder="Search workspace files, queries, documents..." autocomplete="off">
     </div>
-    <a href="/" class="quiet-button">← Back to Studio</a>
+    <nav class="header-nav" aria-label="Primary navigation"><a href="/" class="quiet-button">Studio</a><a href="/search" class="quiet-button" aria-current="page">Search explorer</a><a href="/documents" class="quiet-button">Documents</a></nav>
   </header>
 
   <div class="search-layout">
     <aside class="search-sidebar">
       <div class="section-heading"><h2>SEARCH MODES</h2></div>
-      <nav class="search-tabs" id="search-tabs" aria-label="Search Modes">
-        <button data-mode="files" class="active">Workspace Files</button>
-        <button data-mode="queries">Queries</button>
-        <button data-mode="documents">OPDs</button>
-        <button data-mode="catalogs">Catalog types & records</button>
+      <nav class="search-tabs" aria-label="Search Modes">
+        <label for="search-mode">Browse</label>
+        <select id="search-mode" aria-label="Search mode">
+          <option value="files">Workspace files</option>
+          <option value="queries">Queries</option>
+          <option value="documents">OPDs</option>
+          <option value="catalogs">Catalog types &amp; records</option>
+        </select>
       </nav>
       
       <!-- Dynamic Sidebar Content based on mode -->
