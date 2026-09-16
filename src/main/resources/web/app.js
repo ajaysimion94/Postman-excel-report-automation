@@ -7,7 +7,10 @@ const encode = encodeURIComponent;
 const state = {token:'', files:[], documents:[], active:null, selected:'filters', collapsed:new Set(), collection:'', resultHidden:false, editorHidden:false,
   run:null, activeRun:null, history:[], view:'summary', logs:[], reportPath:null, sheet:0, offset:0, renderVersion:0, previewCache:new Map(), busy:false,
   apiCollectionPath:null, apiCollection:null, apiRequestIndex:0, apiResponse:null, apiSending:false,
-  apiRequestTab:'params', apiVariablesSaving:false, apiVariablesSaved:'', apiResponseView:'pretty', apiResponseDataset:0, apiTableFilter:''};
+  apiRequestTab:'params', apiVariablesSaving:false, apiVariablesSaved:'', apiResponseView:'pretty', apiResponseDataset:0, apiTableFilter:'',
+  apiAuthSecrets:[], apiAuthSecretsLoaded:false, apiAuthSecretsBusy:false, apiAuthSecretsError:'', apiAuthSecretDraft:'',
+  apiAuthCredentialType:'bearer', apiAuthCredentialDraft:{}, apiAuthCredentialUsed:'', apiSecretConfirm:'',
+  apiAuthSources:null, apiAuthSourcesKey:'', apiAuthSourcesBusy:false, apiAuthSourcesError:''};
 const summaryBlock = `SUMMARY {
   TITLE "API execution report" COLOR "#245C50";
   DESCRIPTION "Request outcomes and execution details.";
@@ -184,6 +187,9 @@ async function openApiCollection(path) {
   state.apiTableFilter = '';
   state.apiVariablesSaving = false;
   state.apiVariablesSaved = '';
+  // The credential inventory is per collection, so it is refetched rather than reused.
+  state.apiAuthSources = null;
+  state.apiAuthSourcesKey = '';
   setResultsOnly(true);
   setView('api');
   renderTree();
@@ -503,6 +509,10 @@ async function renderResult() {
   const content = $('result-content');
   try {
     if (state.view === 'api') {
+      if (state.apiRequestTab === 'auth') {
+        if (!state.apiAuthSecretsLoaded) refreshApiAuthSecrets();
+        else refreshApiAuthSources();
+      }
       content.innerHTML = state.apiCollection ? apiClientView(state.apiCollection)
         : empty('Loading API workspace…', 'Reading requests from the selected Postman collection.');
       return;
@@ -829,15 +839,253 @@ function apiTemplateVariables(request) {
   return `<div class="api-template-vars"><span>URL variables</span>${names.map(name => `<button data-api-request-tab="variables" class="${Object.hasOwn(values,name) ? 'is-set' : 'is-missing'}"><code>{{${escapeHtml(name)}}}</code><small>${Object.hasOwn(values,name) ? 'set' : 'needs value'}</small></button>`).join('')}</div>`;
 }
 
+// Variable names referenced as {{NAME}} inside the request's own auth values.
+function apiAuthTemplateNames(request) {
+  const values = request?.auth?.values || {};
+  const found = Object.values(values).flatMap(value => typeof value === 'string'
+    ? [...value.matchAll(/\{\{\s*([A-Za-z0-9_]+)\s*}}/g)].map(match => match[1]) : []);
+  return [...new Set(found)];
+}
+
+// Mirrors SecretVault.loadAll(): the credential name resolves to its first populated field, and every
+// populated field of a typed credential is also published as NAME_ROLE. A raw credential publishes
+// only its own name. Keeping these in step stops the panel warning about a reference that resolves.
+function apiStoredSecretNames() {
+  const names = new Set();
+  (state.apiAuthSecrets || []).forEach(entry => {
+    names.add(entry.name);
+    if (entry.type === 'raw') return;
+    (entry.fields || []).filter(field => field.length > 0)
+      .forEach(field => names.add(`${entry.name}_${field.key}`.toUpperCase()));
+  });
+  return names;
+}
+
+// A field is "missing" when it references a vault variable that is not stored yet.
+function apiMissingSecretName(value) {
+  if (!state.apiAuthSecretsLoaded) return null;
+  const match = String(value || '').match(/^\{\{\s*([A-Za-z0-9_]+)\s*}}$/);
+  return match && !apiStoredSecretNames().has(match[1]) ? match[1] : null;
+}
+
+// The auth types a stored credential can declare, matching the engine's supported auth. "Raw value"
+// exists only so older single-value vault entries stay readable; a request itself cannot send it.
+const authCredentialTypes = [['noauth','No Auth'],['basic','Basic Auth'],['bearer','Bearer Token'],['apikey','API Key'],['raw','Raw value']];
+
+/** The auth types a request can actually send — everything except the storage-only raw value. */
+const authRequestTypes = authCredentialTypes.filter(([value]) => value !== 'raw');
+
+// The value fields a given auth type expects, mirroring SecretVault.fieldsFor().
+const authCredentialFields = {noauth:[], basic:['username','password'], bearer:['token'], apikey:['key','value','in'], raw:['value']};
+const authCredentialFieldLabels = {username:['Username','{{API_USERNAME}}'], password:['Password','{{API_PASSWORD}}'],
+  token:['Token','{{BEARER_TOKEN}}'], key:['Key','X-API-Key'], value:['Value','{{API_KEY}}'], in:['Add to','']};
+
+function apiAuthTypeOptions(selected, types = authCredentialTypes) {
+  return types.map(([value,label]) => `<option value="${value}" ${value === selected ? 'selected' : ''}>${label}</option>`).join('');
+}
+
+function apiAuthTypeLabel(type) {
+  return (authCredentialTypes.find(([value]) => value === type) || [type, type])[1];
+}
+
+/** Detects whether a request's auth fields exactly reference one stored credential. */
+function apiSavedCredentialFor(request) {
+  if (!request || !request.auth || request.auth.type === 'noauth') return '';
+  const values = request.auth.values || {};
+  const referenced = Object.values(values)
+    .map(value => String(value || '').match(/^\{\{\s*([A-Za-z0-9_]+)\s*}}$/)?.[1])
+    .filter(Boolean);
+  if (!referenced.length) return '';
+  const primary = referenced[0];
+  return (state.apiAuthSecrets || []).some(entry => entry.name === primary && entry.type === request.auth.type) ? primary : '';
+}
+
+function apiAuthSecretsPanel() {
+  const secrets = state.apiAuthSecrets || [];
+  // Once the inventory has loaded it owns every row, including the vault's, so the vault is not
+  // listed twice. Until then the editable vault list stands alone.
+  const rows = !state.apiAuthSources && secrets.length
+    ? `<ul class="api-secret-list">${secrets.map(entry => `<li class="${state.apiSecretConfirm === entry.name ? 'is-confirming' : ''}"><code>{{${escapeHtml(entry.name)}}}</code><span class="api-secret-type">${escapeHtml(apiAuthTypeLabel(entry.type))}</span><span class="api-secret-preview">${escapeHtml(entry.preview)}</span><span class="api-secret-length">${entry.length} chars</span><button type="button" class="api-secret-use" data-use-api-secret="${escapeHtml(entry.name)}" ${entry.type === 'raw' ? 'disabled' : ''} title="${entry.type === 'raw' ? 'A raw value is not an auth type a request can send — reference it as {{' + escapeHtml(entry.name) + '}} instead.' : 'Bind this credential to the request you are editing'}">Use in this request</button><button type="button" class="api-secret-remove" data-remove-api-secret="${escapeHtml(entry.name)}" title="Remove this credential" aria-label="Remove credential ${escapeHtml(entry.name)}">×</button></li>`).join('')}</ul>`
+    : '';
+  const confirm = state.apiSecretConfirm
+    ? `<div class="api-secret-confirm" role="alertdialog" aria-label="Confirm removing ${escapeHtml(state.apiSecretConfirm)}"><span>Remove <code>{{${escapeHtml(state.apiSecretConfirm)}}}</code>? Every request referencing it will stop resolving.</span><button type="button" class="api-secret-confirm-remove" data-confirm-api-secret="${escapeHtml(state.apiSecretConfirm)}">Remove</button><button type="button" data-cancel-api-secret="true">Keep</button></div>`
+    : '';
+  const type = state.apiAuthCredentialType;
+  const fields = authCredentialFields[type] || [];
+  // The list above and the form below are one workspace-wide store, so the heading says so and the
+  // actions live on the rows: "Use in this request" is how a credential reaches a request.
+  const typeFields = fields.map(field => {
+    const [label, placeholder] = authCredentialFieldLabels[field] || [field, ''];
+    if (field === 'in') return `<label><span>${label}</span><select data-api-credential-field="in"><option value="header">Header</option><option value="query">Query params</option></select></label>`;
+    const password = field !== 'username' && field !== 'key';
+    return `<label><span>${label}</span><input type="${password ? 'password' : 'text'}" data-api-credential-field="${field}" value="${escapeHtml(state.apiAuthCredentialDraft[field] || '')}" placeholder="${placeholder}" autocomplete="off" spellcheck="false"></label>`;
+  }).join('');
+  const emptyType = fields.length ? '' : '<p class="api-panel-empty">A No Auth credential stores no value — naming it is enough.</p>';
+  return `<section class="api-secrets"><div class="api-secrets-heading"><h3>Stored credentials</h3><span class="api-secrets-badge" title="Encrypted at rest with AES-256-GCM, using a key derived from this machine and user account.">Encrypted · this machine only</span><span class="api-secrets-scope">Workspace-wide</span></div>${rows}${confirm}${state.apiAuthSecretsError ? `<p class="api-secret-error" role="alert">${escapeHtml(state.apiAuthSecretsError)}</p>` : ''}<form class="api-secret-form" data-api-secret-form><label class="api-secret-type-field"><span>Credential type</span><select data-api-credential-type>${apiAuthTypeOptions(type)}</select></label><label><span>Credential name</span><input data-api-secret-name value="${escapeHtml(state.apiAuthSecretDraft)}" placeholder="MY_API_TOKEN" autocomplete="off" spellcheck="false"></label>${typeFields}<button type="submit" class="api-secret-save" ${state.apiAuthSecretsBusy ? 'disabled' : ''}>${state.apiAuthSecretsBusy ? 'Saving…' : 'Save credential'}</button></form>${emptyType}</section>`;
+}
+
+// Binds a stored credential to the request as {{NAME}} references, so no secret value is ever
+// written into the collection file. Multi-field credentials use {{NAME_ROLE}} for the extra fields.
+function applySavedCredential(name) {
+  const request = currentApiRequest();
+  if (!request || !name) { state.apiAuthCredentialUsed = ''; renderResult(); return; }
+  const entry = (state.apiAuthSecrets || []).find(item => item.name === name);
+  if (!entry) return;
+  const stored = new Set((entry.fields || []).filter(field => field.length > 0).map(field => field.key));
+  const values = {};
+  let primary = false;
+  (authCredentialFields[entry.type] || []).forEach(role => {
+    if (role === 'in') { values.in = 'header'; return; }
+    if (!stored.has(role)) return;
+    if (!primary) { values[role] = `{{${name}}}`; primary = true; }
+    else values[role] = `{{${(name + '_' + role).toUpperCase()}}}`;
+  });
+  request.auth = {type: entry.type, values};
+  state.apiAuthCredentialUsed = name;
+  renderResult();
+}
+
 function apiAuthPanel(request) {
   const type = request.auth.type;
   const values = request.auth.values;
-  const secret = (field, label, placeholder) => `<label><span>${label}</span><input type="password" data-api-auth-field="${field}" value="${escapeHtml(values[field] || '')}" placeholder="${placeholder}" autocomplete="off"></label>`;
+  const secrets = state.apiAuthSecrets || [];
+  const picker = secrets.length
+    ? `<label class="api-auth-saved"><span>Use a stored credential</span><select data-api-credential-use><option value="" ${state.apiAuthCredentialUsed ? '' : 'selected'}>— Set this request up by hand —</option>${secrets.map(entry => `<option value="${escapeHtml(entry.name)}" ${state.apiAuthCredentialUsed === entry.name ? 'selected' : ''}>${escapeHtml(entry.name)} · ${escapeHtml(apiAuthTypeLabel(entry.type))}</option>`).join('')}</select><small class="api-config-note">Picking one binds it as a <code>{{NAME}}</code> reference, so the value stays out of the collection file.</small></label>`
+    : '';
+  const secret = (field, label, placeholder) => {
+    const value = values[field] || '';
+    const missing = apiMissingSecretName(value);
+    return `<label><span>${label}</span><input type="password" data-api-auth-field="${field}" value="${escapeHtml(value)}" placeholder="${placeholder}" autocomplete="off">${missing ? `<small class="api-auth-missing">No stored secret named <code>{{${escapeHtml(missing)}}}</code> yet — add it below.</small>` : ''}</label>`;
+  };
   let fields = '<p class="api-panel-empty">This request will be sent without an Authorization header.</p>';
   if (type === 'basic') fields = `<div class="api-auth-fields"><label><span>Username</span><input data-api-auth-field="username" value="${escapeHtml(values.username || '')}" placeholder="{{API_USERNAME}}" autocomplete="off"></label>${secret('password','Password','{{API_PASSWORD}}')}</div>`;
   else if (type === 'bearer') fields = `<div class="api-auth-fields">${secret('token','Token','{{BEARER_TOKEN}}')}</div>`;
   else if (type === 'apikey') fields = `<div class="api-auth-fields"><label><span>Key</span><input data-api-auth-field="key" value="${escapeHtml(values.key || '')}" placeholder="X-API-Key" autocomplete="off"></label>${secret('value','Value','{{API_KEY}}')}<label><span>Add to</span><select data-api-auth-field="in"><option value="header" ${values.in !== 'query' ? 'selected' : ''}>Header</option><option value="query" ${values.in === 'query' ? 'selected' : ''}>Query params</option></select></label></div>`;
-  return `<div class="api-auth-panel"><label class="api-auth-type"><span>Type</span><select data-api-auth-type><option value="noauth" ${type === 'noauth' ? 'selected' : ''}>No Auth</option><option value="basic" ${type === 'basic' ? 'selected' : ''}>Basic Auth</option><option value="bearer" ${type === 'bearer' ? 'selected' : ''}>Bearer Token</option><option value="apikey" ${type === 'apikey' ? 'selected' : ''}>API Key</option></select></label>${fields}<p class="api-config-note">Values may use collection or environment variables such as <code>{{TOKEN}}</code>.</p></div>`;
+  // Two panels sit on this tab: what this request sends, and the workspace-wide credentials it can
+  // borrow from. Each carries its own heading so the two "type" dropdowns cannot be confused.
+  return `<div class="api-auth-panel"><section class="api-auth-request"><div class="api-scope-heading"><h4>This request</h4><span>Sent with this request only. It wins over any stored credential or .env value.</span></div>${picker}<label class="api-auth-type"><span>Type</span><select data-api-auth-type>${apiAuthTypeOptions(type, authRequestTypes)}</select></label>${fields}<p class="api-config-note">Type a value here to send it with this request only, or use a <code>{{NAME}}</code> reference to pull it from a stored credential.</p></section>${apiAuthSourcesPanel()}${apiAuthSecretsPanel()}</div>`;
+}
+
+async function refreshApiAuthSecrets() {
+  if (state.apiAuthSecretsBusy) return;
+  state.apiAuthSecretsBusy = true;
+  try {
+    const result = await api('/api/auth/secrets');
+    state.apiAuthSecrets = result.secrets || [];
+    state.apiAuthSecretsError = '';
+  } catch (error) {
+    state.apiAuthSecretsError = error.message;
+  } finally {
+    state.apiAuthSecretsBusy = false;
+    state.apiAuthSecretsLoaded = true;
+    renderResult();
+    refreshApiAuthSources();
+  }
+}
+
+/**
+ * Loads the ambient credential inventory: the vault, the active CLI profile, the matching filter,
+ * and .env, each tagged with whether it would supply the open request's credential.
+ */
+async function refreshApiAuthSources() {
+  if (!state.apiCollectionPath) { state.apiAuthSources = null; return; }
+  const key = `${state.apiCollectionPath}#${state.apiRequestIndex}`;
+  if (state.apiAuthSourcesBusy || state.apiAuthSourcesKey === key) return;
+  state.apiAuthSourcesBusy = true;
+  try {
+    const query = `collection=${encode(state.apiCollectionPath)}&index=${encode(state.apiRequestIndex)}`;
+    const result = await api(`/api/auth/sources?${query}`);
+    // A slower response for a request the user has already navigated away from must not win.
+    if (`${state.apiCollectionPath}#${state.apiRequestIndex}` !== key) return;
+    state.apiAuthSources = result;
+    state.apiAuthSourcesKey = key;
+    state.apiAuthSourcesError = '';
+  } catch (error) {
+    state.apiAuthSourcesError = error.message;
+  } finally {
+    state.apiAuthSourcesBusy = false;
+    renderResult();
+  }
+}
+
+/** The sources panel, or null while the inventory has not been fetched for this request. */
+function apiAuthSourcesPanel() {
+  const data = state.apiAuthSources;
+  if (!data) return '';
+  const effective = data.effective || {};
+  const winning = new Set((effective.fields || []).filter(field => field.key).map(field => `${field.source}:${field.key}`));
+  const groups = (data.sources || []).map(group => {
+    const rows = group.entries.length
+      ? group.entries.map(entry => {
+        const won = winning.has(`${group.id}:${entry.name}`);
+        if (group.id === 'request') {
+          const shown = entry.reference ? `<code class="api-source-ref">${escapeHtml(entry.preview)}</code>` : `<span class="api-secret-preview">${escapeHtml(entry.preview)}</span>`;
+          return `<li class="api-source-row ${won ? 'is-winner' : ''}"><code>${escapeHtml(entry.name)}</code>${shown}${won ? '<span class="api-source-tag">In use</span>' : ''}</li>`;
+        }
+        if (group.id === 'vault') {
+          return `<li class="api-source-row ${won ? 'is-winner' : ''} ${state.apiSecretConfirm === entry.name ? 'is-confirming' : ''}"><code>{{${escapeHtml(entry.name)}}}</code><span class="api-secret-type">${escapeHtml(apiAuthTypeLabel(entry.type || 'raw'))}</span><span class="api-secret-preview">${escapeHtml(entry.preview)}</span><span class="api-secret-length">${entry.length} chars</span>${won ? '<span class="api-source-tag">In use</span>' : ''}<button type="button" class="api-secret-use" data-use-api-secret="${escapeHtml(entry.name)}" ${entry.type === 'raw' ? 'disabled' : ''} title="${entry.type === 'raw' ? 'A raw value is not an auth type a request can send — reference it as {{' + escapeHtml(entry.name) + '}} instead.' : 'Set this request to use this credential'}${won ? ' (it is already applied)' : ''}">Use</button><button type="button" class="api-secret-remove" data-remove-api-secret="${escapeHtml(entry.name)}" title="Remove this credential" aria-label="Remove credential ${escapeHtml(entry.name)}">×</button></li>`;
+        }
+        return `<li class="api-source-row ${won ? 'is-winner' : ''}"><code>${escapeHtml(entry.name)}</code><span class="api-secret-preview">${escapeHtml(entry.preview)}</span><span class="api-secret-length">${entry.length} chars</span>${won ? '<span class="api-source-tag">In use</span>' : ''}</li>`;
+      }).join('')
+      : `<li class="api-source-row is-empty">${group.id === 'filter' ? 'No filter matches this collection.' : 'Nothing configured.'}</li>`;
+    return `<div class="api-source-group ${group.id === 'request' ? 'is-request' : ''}"><div class="api-source-head"><span class="api-source-rank" aria-hidden="true">${group.order < 0 ? '·' : group.order + 1}</span><h4>${escapeHtml(group.label)}</h4><span class="api-source-detail">${escapeHtml(group.detail)}</span></div><ul class="api-source-list">${rows}</ul></div>`;
+  }).join('');
+  const filterNote = data.filterPath ? `Filter <code>${escapeHtml(basename(data.filterPath))}</code>` : 'No filter matches this collection';
+  return `<section class="api-auth-sources"><div class="api-scope-heading"><h4>Where credentials come from</h4><span>Ranked by precedence — the first source providing a value wins.</span></div><p class="api-source-summary">${escapeHtml(effective.summary || '')}</p>${groups}<p class="api-config-note">${filterNote} · env file <code>${escapeHtml(data.envPath || '.env')}</code>. Values are shown masked; nothing here is sent to the browser in clear text.</p>${state.apiAuthSourcesError ? `<p class="api-secret-error" role="alert">${escapeHtml(state.apiAuthSourcesError)}</p>` : ''}</section>`;
+}
+
+async function saveApiSecret() {
+  if (state.apiAuthSecretsBusy) return;
+  const form = document.querySelector('[data-api-secret-form]');
+  const name = (form?.querySelector('[data-api-secret-name]')?.value || '').trim();
+  const type = form?.querySelector('[data-api-credential-type]')?.value || state.apiAuthCredentialType;
+  const values = {};
+  form?.querySelectorAll('[data-api-credential-field]').forEach(input => { values[input.dataset.apiCredentialField] = input.value; });
+  state.apiAuthSecretDraft = name;
+  state.apiAuthCredentialType = type;
+  state.apiAuthCredentialDraft = values;
+  if (!name) { state.apiAuthSecretsError = 'Enter a variable name, for example MY_API_TOKEN.'; renderResult(); return; }
+  const required = (authCredentialFields[type] || []).filter(field => field !== 'in');
+  if (required.length && required.every(field => !String(values[field] || '').trim())) {
+    state.apiAuthSecretsError = `Enter a ${apiAuthTypeLabel(type)} value before saving.`;
+    renderResult();
+    return;
+  }
+  state.apiAuthSecretsBusy = true;
+  state.apiAuthSecretsError = '';
+  renderResult();
+  try {
+    const result = await api('/api/auth/credentials', {method:'PUT', body:{credentials:[{name, type, values}]}});
+    state.apiAuthSecrets = result.secrets || [];
+    state.apiAuthSecretDraft = '';
+    state.apiAuthCredentialDraft = {};
+    notify(`${name} saved to the encrypted vault as ${apiAuthTypeLabel(type)}.`);
+  } catch (error) {
+    state.apiAuthSecretsError = error.message;
+  } finally {
+    state.apiAuthSecretsBusy = false;
+    state.apiAuthSecretsLoaded = true;
+    renderResult();
+  }
+}
+
+async function removeApiSecret(name) {
+  if (state.apiAuthSecretsBusy) return;
+  state.apiAuthSecretsBusy = true;
+  state.apiAuthSecretsError = '';
+  renderResult();
+  try {
+    const result = await api(`/api/auth/secrets?name=${encode(name)}`, {method:'DELETE'});
+    state.apiAuthSecrets = result.secrets || [];
+    if (state.apiAuthCredentialUsed === name) state.apiAuthCredentialUsed = '';
+    notify(`${name} removed from this workspace.`);
+  } catch (error) {
+    state.apiAuthSecretsError = error.message;
+  } finally {
+    state.apiAuthSecretsBusy = false;
+    state.apiAuthSecretsLoaded = true;
+    renderResult();
+  }
 }
 
 function apiBodyPanel(request) {
@@ -862,7 +1110,8 @@ function apiClientView(collection) {
   const response = state.apiResponse;
   const counts = {params:request.params.filter(row => row.enabled && row.key.trim()).length, headers:request.headers.filter(row => row.enabled && row.key.trim()).length};
   const tabs = [['params','Params',counts.params],['auth','Authorization',''],['headers','Headers',counts.headers],['body','Body',request.bodyMode === 'none' ? '' : '•'],['variables','Variables',collection.variables.filter(row => row.enabled && row.key.trim()).length]];
-  const responseMeta = state.apiSending ? '<span class="api-response-prompt">Waiting for response…</span>' : response ? `<div class="api-response-meta"><span class="api-status ${response.success ? 'ok' : 'error'}">${response.statusCode || 'Error'} ${response.statusCode ? responseStatusText(response.statusCode) : ''}</span><span>${response.durationMs} ms</span><span>${formatResponseSize(response.body)}</span></div>` : '<span class="api-response-prompt">Send the request to see its response.</span>';
+  const authApplied = response?.authApplied ? `<span class="api-auth-applied ${/workspace default/.test(response.authApplied) ? 'is-default' : ''}" title="Which credential this request actually used">${escapeHtml(response.authApplied)}</span>` : '';
+  const responseMeta = state.apiSending ? '<span class="api-response-prompt">Waiting for response…</span>' : response ? `<div class="api-response-meta"><span class="api-status ${response.success ? 'ok' : 'error'}">${response.statusCode || 'Error'} ${response.statusCode ? responseStatusText(response.statusCode) : ''}</span><span>${response.durationMs} ms</span><span>${formatResponseSize(response.body)}</span>${authApplied}</div>` : '<span class="api-response-prompt">Send the request to see its response.</span>';
   return `<div class="api-client"><aside class="api-request-list"><div class="api-collection-heading"><span class="eyebrow">COLLECTION</span><h2>${escapeHtml(collection.name)}</h2><span>${collection.requests.length} request${collection.requests.length === 1 ? '' : 's'}</span></div><div class="api-request-scroll">${collection.requests.map((item,index) => `<button class="api-request-item ${index === state.apiRequestIndex ? 'active' : ''}" data-api-request="${index}"><span class="method ${escapeHtml(item.method.toLowerCase())}">${escapeHtml(item.method)}</span><span><strong>${escapeHtml(item.name)}</strong>${item.folder ? `<small>${escapeHtml(item.folder)}</small>` : ''}</span>${item.disabled ? '<em>OFF</em>' : ''}</button>`).join('')}</div><button class="api-source-button" data-edit-collection="${escapeHtml(collection.path)}">{ } View collection JSON</button></aside><section class="api-request-workspace"><div class="api-request-title"><div><span class="eyebrow">${escapeHtml(request.folder || 'REQUEST')}</span><h2>${escapeHtml(request.name)}</h2></div>${request.disabled ? '<span class="api-disabled">Disabled in collection · manual Send is available</span>' : ''}</div><div class="api-url-bar"><select data-api-field="method" aria-label="HTTP method">${['GET','POST','PUT','PATCH','DELETE','HEAD','OPTIONS'].map(method => `<option ${method === request.method.toUpperCase() ? 'selected' : ''}>${method}</option>`).join('')}</select><input data-api-field="url" aria-label="Request URL" value="${escapeHtml(request.url)}" spellcheck="false"><button class="primary-button api-send" data-send-request="true" ${state.apiSending ? 'disabled' : ''}>${state.apiSending ? 'Sending…' : 'Send'}</button></div>${request.description ? `<p class="api-description">${escapeHtml(request.description)}</p>` : ''}<div class="api-request-config"><div class="api-request-tabs" role="tablist" aria-label="Request configuration">${tabs.map(([value,label,count]) => `<button role="tab" aria-selected="${state.apiRequestTab === value}" data-api-request-tab="${value}" class="${state.apiRequestTab === value ? 'active' : ''}">${label}${count !== '' ? `<span>${count}</span>` : ''}</button>`).join('')}</div>${apiRequestPanel(request)}</div><section class="api-response"><div class="api-response-heading"><h3>Response</h3><div class="api-response-tools">${apiResponseToolbar(response)}${responseMeta}</div></div>${apiResponseContent(response)}</section></section></div>`;
 }
 
@@ -1046,7 +1295,9 @@ bind('result-content','click',async event => {
   if (!button || button.disabled) return;
   if ('apiRequest' in button.dataset) {
     state.apiRequestIndex = Number(button.dataset.apiRequest); state.apiResponse = null;
-    state.apiResponseView = 'pretty'; state.apiResponseDataset = 0; renderResult();
+    state.apiAuthSources = null;
+    state.apiResponseView = 'pretty'; state.apiResponseDataset = 0;
+    state.apiAuthCredentialUsed = apiSavedCredentialFor(currentApiRequest()); renderResult();
   }
   else if (button.dataset.apiRequestTab) { state.apiRequestTab = button.dataset.apiRequestTab; renderResult(); }
   else if (button.dataset.apiBodyMode) {
@@ -1068,6 +1319,10 @@ bind('result-content','click',async event => {
   else if ('saveApiVariables' in button.dataset) await saveApiVariables();
   else if (button.dataset.apiResponseView) { state.apiResponseView = button.dataset.apiResponseView; renderResult(); }
   else if (button.dataset.copyResponse) await copyApiResponse();
+  else if (button.dataset.useApiSecret) applySavedCredential(button.dataset.useApiSecret);
+  else if (button.dataset.removeApiSecret) { state.apiSecretConfirm = button.dataset.removeApiSecret; renderResult(); }
+  else if (button.dataset.confirmApiSecret) { state.apiSecretConfirm = ''; await removeApiSecret(button.dataset.confirmApiSecret); }
+  else if ('cancelApiSecret' in button.dataset) { state.apiSecretConfirm = ''; renderResult(); }
   else if (button.dataset.sendRequest) await sendApiRequest();
   else if (button.dataset.editCollection) {
     setResultsOnly(false); state.resultHidden = false;
@@ -1122,11 +1377,30 @@ bind('result-content','input',event => {
     }
   }
 });
+bind('result-content','submit',async event => {
+  if (event.target.dataset.apiSecretForm === undefined) return;
+  event.preventDefault();
+  await saveApiSecret();
+});
 bind('result-content','change',event => {
   if (event.target.id === 'workbook-file') { state.reportPath = event.target.value; state.sheet = 0; state.offset = 0; renderResult(); }
   else if (event.target.dataset.apiField === 'method' && currentApiRequest()) currentApiRequest().method = event.target.value;
+  else if ('apiCredentialUse' in event.target.dataset && currentApiRequest()) {
+    applySavedCredential(event.target.value);
+  }
   else if ('apiAuthType' in event.target.dataset && currentApiRequest()) {
-    currentApiRequest().auth = {type:event.target.value, values:{}}; renderResult();
+    // Keep the values already typed for the fields both types share (e.g. a token).
+    const previous = currentApiRequest().auth.values || {};
+    const kept = {};
+    Object.keys(previous).forEach(key => { if (event.target.value !== 'noauth') kept[key] = previous[key]; });
+    currentApiRequest().auth = {type:event.target.value, values:kept};
+    renderResult();
+  }
+  else if ('apiCredentialType' in event.target.dataset) {
+    const form = event.target.closest('[data-api-secret-form]');
+    form?.querySelectorAll('[data-api-credential-field]').forEach(input => { state.apiAuthCredentialDraft[input.dataset.apiCredentialField] = input.value; });
+    state.apiAuthCredentialType = event.target.value;
+    renderResult();
   }
   else if (event.target.dataset.apiAuthField && currentApiRequest()) {
     currentApiRequest().auth.values[event.target.dataset.apiAuthField] = event.target.value;

@@ -68,7 +68,7 @@ java -jar target/postman-excel-runner-1.0.0.jar --web \
 The workspace directory must already exist. The application creates its
 `collections`, `filters`, `queries`, `reports`, and `documents` subdirectories when needed. The default
 environment file is `.env` inside the selected workspace. Environment variables,
-credential profiles, filter overrides, HTTP settings, and Postman compatibility
+credential profiles, filter overrides, HTTP settings, the secret vault, and Postman compatibility
 rules use the existing Java engine.
 
 ## Use the guided workspace
@@ -163,7 +163,14 @@ run read-only GET requests and require internet access, but no API key.
    - **Params** adds, removes, or temporarily disables query parameters and keeps the
      URL synchronized.
    - **Authorization** supports No Auth, Basic Auth, Bearer Token, and API Key in a
-     header or query parameter.
+     header or query parameter. What you set here is what gets sent: request auth
+     beats `.env`, filter, and credential-store defaults. After a send, the response
+     reports which credential was applied and where it came from, without ever
+     printing the secret itself. The same tab hosts the **Secret vault**, which stores
+     named values on disk encrypted (`.web-state/secrets.enc`, AES-256-GCM) so you can
+     reference them as `{{NAME}}` in an auth field, URL, header, or body instead of
+     pasting a secret into the collection JSON. Vault listings show the name, length,
+     and a masked preview only.
    - **Headers** manages enabled request headers.
    - **Body** supports raw, `x-www-form-urlencoded`, and text `form-data` bodies.
    - **Variables** edits collection variables used anywhere in the request. For
@@ -171,7 +178,10 @@ run read-only GET requests and require internet access, but no API key.
      `{{baseUrl}}/users/{{ID}}` or in a parameter value. Select **Save to collection**
      to write these values back to the collection JSON.
 4. Select **Send**. Collection and `.env` variables are loaded automatically; current
-   values in the Variables tab take precedence for this API-client send.
+   values in the Variables tab take precedence for this API-client send. Auth follows
+   the same rule — the Authorization tab wins over `.env`, filter, and credential-store
+   values, so a request that authenticates correctly from the CLI keeps working after
+   you set auth in the UI.
 5. Review the response status, elapsed time, error, or response body. Use **Pretty**
    for formatted JSON, **Table** for report-like rows and columns, or **Raw** for the
    original response text. Nested arrays such as `data.items` are detected as separate

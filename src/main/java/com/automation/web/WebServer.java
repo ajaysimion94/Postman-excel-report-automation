@@ -2,6 +2,7 @@ package com.automation.web;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.automation.auth.secrets.SecretVault;
 import com.automation.postman.AuthDefinition;
 import com.automation.postman.RequestBodyField;
 import com.automation.postman.RequestHeader;
@@ -198,6 +199,41 @@ public final class WebServer implements AutoCloseable {
             }
             case "GET /api/runs" -> json(exchange, 200, reports.history());
             case "GET /api/run" -> json(exchange, 200, reports.get(query.get("id")));
+            case "GET /api/auth/secrets" -> json(exchange, 200, Map.of("secrets", vaultList()));
+            case "GET /api/auth/sources" -> json(exchange, 200, reports.authSources(query.get("collection"), query.get("index"), query.get("filter")));
+            case "PUT /api/auth/secrets" -> {
+                JsonNode body = body(exchange);
+                if (!body.path("secrets").isObject()) throw new WebException(400, "Send secrets as an object of variable name to value.");
+                Map<String, String> secrets = textMap(body.path("secrets"), "Secrets", 200, 100_000);
+                json(exchange, 200, Map.of("message", "Saved to the encrypted vault.",
+                        "secrets", vaultWrite(() -> reports.vault().putAll(secrets))));
+            }
+            case "DELETE /api/auth/secrets" -> {
+                String name = query.get("name");
+                if (name == null || name.isBlank()) throw new WebException(400, "Choose a variable to remove.");
+                json(exchange, 200, Map.of("message", "Removed from the encrypted vault.",
+                        "secrets", vaultWrite(() -> { if (!reports.vault().remove(name)) throw new WebException(404, "That variable is not stored."); })));
+            }
+            case "PUT /api/auth/credentials" -> {
+                JsonNode body = body(exchange);
+                JsonNode nodes = body.path("credentials");
+                if (!nodes.isArray()) throw new WebException(400, "Send credentials as a list.");
+                if (nodes.size() > 200) throw new WebException(400, "Save no more than 200 credentials at once.");
+                Map<String, SecretVault.Credential> credentials = new LinkedHashMap<>();
+                for (JsonNode node : nodes) {
+                    if (!node.isObject()) throw new WebException(400, "Each credential must be an object.");
+                    String name = required(node, "name").trim();
+                    String type = node.path("type").asText("raw").toLowerCase(Locale.ROOT);
+                    if (!SecretVault.SUPPORTED_TYPES.contains(type)) {
+                        throw new WebException(400, "Unsupported auth type: " + type + ".");
+                    }
+                    Map<String, String> values = textMap(node.path("values"), "Credential values", 20, 16_000);
+                    credentials.put(name, new SecretVault.Credential(name, type, values));
+                }
+                if (credentials.isEmpty()) throw new WebException(400, "Enter a credential before saving.");
+                json(exchange, 200, Map.of("message", "Saved to the encrypted vault.",
+                        "secrets", vaultWrite(() -> reports.vault().putCredentials(credentials))));
+            }
             case "GET /api/search" -> json(exchange, 200, searchService.search(query.get("q"), query.get("type"), query.get("in")));
             case "POST /api/search/query" -> json(exchange, 200, searchService.executeQuery(body(exchange)));
             case "GET /api/search/documents" -> json(exchange, 200, searchService.searchDocuments(query.get("q")));
@@ -243,6 +279,38 @@ public final class WebServer implements AutoCloseable {
                 json(exchange, 200, Map.of("path", files.relative(exportPath)));
             }
             default -> throw new WebException(404, "This operation is not available.");
+        }
+    }
+
+    /** A vault mutation that may reject invalid input or fail at the storage layer. */
+    @FunctionalInterface
+    private interface VaultMutation {
+        void run() throws Exception;
+    }
+
+    /** Returns the stored secret names and masked previews. Values never leave the machine. */
+    private List<Map<String, Object>> vaultList() {
+        try {
+            return reports.vault().list();
+        } catch (Exception e) {
+            throw new IllegalStateException("The secret vault could not be read: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Runs a vault mutation and returns the refreshed listing. Validation errors become a readable
+     * 400; a storage failure becomes a 500 rather than silently pretending the secret was saved.
+     */
+    private List<Map<String, Object>> vaultWrite(VaultMutation mutation) {
+        try {
+            mutation.run();
+            return reports.vault().list();
+        } catch (WebException e) {
+            throw e;
+        } catch (IllegalArgumentException e) {
+            throw new WebException(400, Objects.toString(e.getMessage(), "That secret could not be saved."));
+        } catch (Exception e) {
+            throw new IllegalStateException("The secret vault could not be updated: " + e.getMessage(), e);
         }
     }
 

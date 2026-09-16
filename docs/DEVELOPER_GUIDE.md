@@ -46,7 +46,8 @@ Execution flow:
   - or auto-select when exactly one filter exists in `FILTERS_DIR`
   - for `.filter` files with multiple `COLLECTION` blocks, select block using CLI collection selector
 3. Load runtime variables in `CredentialLoader`
-  - merge precedence: filter auth/vars > .env > system env
+  - merge precedence: filter auth/vars > credential store > .env > system env
+  - request auth (UI / collection JSON) is resolved separately and wins over all of the above
 4. Resolve collection path
   - CLI collection args first
   - fallback to filter `collection` selector
@@ -268,6 +269,9 @@ Test classes:
 | `RowConditionEvaluatorTest` | All 18 operators, AND/OR logic, missing fields, DATE_PRESET, DATE_RANGE, custom format |
 | `ExcelReportGeneratorTest` | Sheet structure, row filtering applied, custom table sheet generation |
 | `CredentialLoaderFilterOverrideTest` | filter auth/vars precedence over `.env` |
+| `RequestExecutorAuthPrecedenceTest` | request auth (UI/collection) winning over `.env`, filter, and vault fallbacks |
+| `SecretVaultTest` | AES-256-GCM secret vault storage, naming rules, and removal |
+| `WebServerTest` | HTTP routes, vault endpoints, API client, runs, and workspace isolation |
 | `DocumentsServiceTest` | Markdown notes, backlinks, revisions, catalog inheritance, relationships, and typed records |
 | `PostmanCollectionParserTest` | Postman collection JSON parsing |
 | `VariableResolverTest` | Variable placeholder substitution |

@@ -25,7 +25,9 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactory;
@@ -132,9 +134,38 @@ public final class RequestExecutor {
                                         Map<String, String> overrideVars,
                                         int timeoutSeconds,
                                         int maxResponseBytes) {
+        return executeSingle(request, baseVariables, overrideVars, timeoutSeconds, maxResponseBytes, baseVariables);
+    }
+
+    /**
+     * Executes a single request, separating workspace-level defaults from the request's own values.
+     *
+     * @param ambientVariables workspace defaults (credential store, vault, filter, .env). Used only
+     *                         as a fallback for auth that the request itself leaves blank, so that
+     *                         auth configured on a request is never silently overridden.
+     */
+    public ExecutionResult executeSingle(RequestSpec request,
+                                        Map<String, String> baseVariables,
+                                        Map<String, String> overrideVars,
+                                        int timeoutSeconds,
+                                        int maxResponseBytes,
+                                        Map<String, String> ambientVariables) {
         Map<String, String> merged = new LinkedHashMap<>(baseVariables);
         merged.putAll(overrideVars);
-        return executeRequest(request, merged, false, timeoutSeconds, maxResponseBytes);
+        return executeRequest(request, merged, ambientVariables, false, timeoutSeconds, maxResponseBytes);
+    }
+
+    /**
+     * Describes which layer supplied a request's credentials, without revealing any secret value.
+     * Used by the UI to show whether auth came from the request itself or a workspace default.
+     */
+    public String describeAppliedAuth(RequestSpec request, Map<String, String> baseVariables,
+                                      Map<String, String> overrideVariables, Map<String, String> ambientVariables) {
+        Map<String, String> merged = new LinkedHashMap<>(baseVariables == null ? Map.of() : baseVariables);
+        if (overrideVariables != null) {
+            merged.putAll(overrideVariables);
+        }
+        return planAuth(request.auth(), merged, ambientVariables).description();
     }
 
     public List<ExecutionResult> execute(PostmanCollection collection, RuntimeConfig config) {
@@ -151,22 +182,26 @@ public final class RequestExecutor {
         int maxResponseBytes = parseMbVar(config.variables(), "MAX_RESPONSE_MB", DEFAULT_MAX_RESPONSE_BYTES);
 
         for (RequestSpec request : collection.requests()) {
-            ExecutionResult result = executeRequest(request, variables, config.includeResponseBody(), timeoutSeconds, maxResponseBytes);
+            ExecutionResult result = executeRequest(request, variables, config.variables(), config.includeResponseBody(),
+                    timeoutSeconds, maxResponseBytes);
             results.add(result);
             onResult.accept(result);
         }
         return List.copyOf(results);
     }
 
-    private ExecutionResult executeRequest(RequestSpec request, Map<String, String> variables, boolean includeResponseBody, int timeoutSeconds, int maxResponseBytes) {
-        String resolvedUrl = appendApiKeyQueryParam(VariableResolver.resolve(request.url(), variables), request.auth(), variables);
+    private ExecutionResult executeRequest(RequestSpec request, Map<String, String> variables,
+                                           Map<String, String> ambientVariables, boolean includeResponseBody,
+                                           int timeoutSeconds, int maxResponseBytes) {
+        AuthPlan authPlan = planAuth(request.auth(), variables, ambientVariables);
+        String resolvedUrl = appendApiKeyQueryParam(VariableResolver.resolve(request.url(), variables), authPlan);
         String resolvedBody = VariableResolver.resolve(request.body(), variables);
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(resolvedUrl));
 
         for (RequestHeader header : request.headers()) {
             builder.header(header.key(), VariableResolver.resolve(header.value(), variables));
         }
-        applyAuth(builder, request.auth(), variables);
+        applyAuth(builder, authPlan);
 
         String method = request.method().toUpperCase();
         if (supportsBody(method) && resolvedBody != null) {
@@ -223,67 +258,133 @@ public final class RequestExecutor {
         }
     }
 
-    private void applyAuth(HttpRequest.Builder builder, AuthDefinition auth, Map<String, String> variables) {
-        if (auth == null || auth.isNone()) {
-            return;
-        }
-
-        String type = auth.type().toLowerCase();
-        switch (type) {
-            case "basic" -> {
-                String username = resolveAuthValue(auth, variables, "username", "API_USERNAME", "USERNAME");
-                String password = resolveAuthValue(auth, variables, "password", "API_PASSWORD", "PASSWORD");
-                String token = Base64.getEncoder().encodeToString((username + ":" + password).getBytes());
-                builder.header("Authorization", "Basic " + token);
-            }
-            case "bearer" -> {
-                String token = resolveAuthValue(auth, variables, "token", "BEARER_TOKEN", "TOKEN");
-                builder.header("Authorization", "Bearer " + token);
-            }
-            case "apikey" -> {
-                String keyName  = resolveAuthValue(auth, variables, "key",   "APIKEY_HEADER", "X-API-Key");
-                String keyValue = resolveAuthValue(auth, variables, "value", "API_KEY",        "APIKEY");
-                String location = auth.values().getOrDefault("in", "header");
-                if (!"query".equalsIgnoreCase(location)) {
-                    builder.header(keyName, keyValue);
-                }
-            }
+    /** A fully resolved auth instruction, plus a secret-free note about where it came from. */
+    private record AuthPlan(String headerName, String headerValue, String queryName, String queryValue, String description) {
+        static AuthPlan none() {
+            return new AuthPlan(null, null, null, null, "");
         }
     }
 
-    private String appendApiKeyQueryParam(String url, AuthDefinition auth, Map<String, String> variables) {
-        if (auth == null || !"apikey".equalsIgnoreCase(auth.type())
-                || !"query".equalsIgnoreCase(auth.values().getOrDefault("in", "header"))) {
-            return url;
+    /** One credential value and which layer supplied it. */
+    private record ResolvedAuthValue(String value, boolean fromRequestAuth) {
+    }
+
+    /**
+     * Resolves the auth for a request. Auth configured on the request itself (collection, folder,
+     * request, or anything edited in the UI client) always wins. Workspace-level defaults — the
+     * credential store, the UI vault, filter auth, .env, and system environment variables — are
+     * only consulted for fields the request leaves blank.
+     */
+    private AuthPlan planAuth(AuthDefinition auth, Map<String, String> variables, Map<String, String> ambientVariables) {
+        if (auth == null || auth.isNone()) {
+            return AuthPlan.none();
         }
-        String paramName = resolveAuthValue(auth, variables, "key", "APIKEY_HEADER", "X-API-Key");
-        String paramValue = resolveAuthValue(auth, variables, "value", "API_KEY", "APIKEY");
-        if (paramName == null || paramName.isBlank()) {
+
+        String type = Objects.toString(auth.type(), "").toLowerCase(Locale.ROOT);
+        return switch (type) {
+            case "basic" -> {
+                ResolvedAuthValue username = resolveAuthValue(auth, variables, ambientVariables, "username", "API_USERNAME", "USERNAME");
+                ResolvedAuthValue password = resolveAuthValue(auth, variables, ambientVariables, "password", "API_PASSWORD", "PASSWORD");
+                if (username.value().isBlank() && password.value().isBlank()) {
+                    yield new AuthPlan(null, null, null, null, "Basic auth is set, but no credentials are configured.");
+                }
+                String encoded = Base64.getEncoder().encodeToString((username.value() + ":" + password.value()).getBytes());
+                yield new AuthPlan("Authorization", "Basic " + encoded, null, null,
+                        "Basic auth " + describeSource(username, password));
+            }
+            case "bearer" -> {
+                ResolvedAuthValue token = resolveAuthValue(auth, variables, ambientVariables, "token", "BEARER_TOKEN", "TOKEN");
+                if (token.value().isBlank()) {
+                    yield new AuthPlan(null, null, null, null, "Bearer auth is set, but no token is configured.");
+                }
+                yield new AuthPlan("Authorization", "Bearer " + token.value(), null, null,
+                        "Bearer token " + describeSource(token));
+            }
+            case "apikey" -> {
+                ResolvedAuthValue keyName = resolveAuthValue(auth, variables, ambientVariables, "key", "APIKEY_HEADER");
+                ResolvedAuthValue keyValue = resolveAuthValue(auth, variables, ambientVariables, "value", "API_KEY", "APIKEY");
+                if (keyValue.value().isBlank()) {
+                    yield new AuthPlan(null, null, null, null, "API key auth is set, but no key value is configured.");
+                }
+                String name = keyName.value().isBlank() ? "X-API-Key" : keyName.value();
+                boolean inQuery = "query".equalsIgnoreCase(Objects.toString(auth.values() == null ? null
+                        : auth.values().get("in"), "header"));
+                String location = inQuery ? "query parameter \"" + name + "\"" : "header \"" + name + "\"";
+                String description = "API key in " + location + " " + describeSource(keyValue);
+                yield inQuery
+                        ? new AuthPlan(null, null, name, keyValue.value(), description)
+                        : new AuthPlan(name, keyValue.value(), null, null, description);
+            }
+            default -> AuthPlan.none();
+        };
+    }
+
+    private static String describeSource(ResolvedAuthValue... values) {
+        boolean fromRequest = false;
+        boolean fromWorkspace = false;
+        for (ResolvedAuthValue value : values) {
+            if (value.value().isBlank()) {
+                continue;
+            }
+            if (value.fromRequestAuth()) {
+                fromRequest = true;
+            } else {
+                fromWorkspace = true;
+            }
+        }
+        if (fromRequest && fromWorkspace) {
+            return "from the request auth and a workspace default";
+        }
+        return fromRequest ? "from the request's own auth" : "from the workspace default (vault, store, filter, or .env)";
+    }
+
+    /**
+     * Resolves a single credential value. A value configured on the request wins; workspace defaults
+     * are only a fallback. An unresolved {@code {{VAR}}} template counts as "not configured" so the
+     * fallback still applies instead of sending a literal placeholder to the server.
+     */
+    private ResolvedAuthValue resolveAuthValue(AuthDefinition auth, Map<String, String> variables,
+                                               Map<String, String> ambientVariables,
+                                               String authKey, String... fallbackKeys) {
+        String configured = auth.values() == null ? null : auth.values().get(authKey);
+        if (configured != null && !configured.isBlank()) {
+            String resolved = VariableResolver.resolve(configured, variables);
+            if (resolved != null && !resolved.isBlank() && !resolved.contains("{{")) {
+                return new ResolvedAuthValue(resolved, true);
+            }
+        }
+
+        if (ambientVariables != null) {
+            for (String fallbackKey : fallbackKeys) {
+                String value = ambientVariables.get(fallbackKey);
+                if (value == null || value.isBlank()) {
+                    continue;
+                }
+                String resolved = VariableResolver.resolve(value, variables);
+                if (resolved != null && !resolved.isBlank()) {
+                    return new ResolvedAuthValue(resolved, false);
+                }
+            }
+        }
+
+        return new ResolvedAuthValue("", configured != null && !configured.isBlank());
+    }
+
+    private void applyAuth(HttpRequest.Builder builder, AuthPlan plan) {
+        if (plan.headerName() != null) {
+            builder.header(plan.headerName(), plan.headerValue());
+        }
+    }
+
+    private String appendApiKeyQueryParam(String url, AuthPlan plan) {
+        if (plan.queryName() == null || plan.queryName().isBlank() || plan.queryValue() == null) {
             return url;
         }
         String separator = url.contains("?") ? "&" : "?";
         return url + separator
-                + java.net.URLEncoder.encode(paramName, java.nio.charset.StandardCharsets.UTF_8)
+                + java.net.URLEncoder.encode(plan.queryName(), java.nio.charset.StandardCharsets.UTF_8)
                 + "="
-                + java.net.URLEncoder.encode(paramValue, java.nio.charset.StandardCharsets.UTF_8);
-    }
-
-    private String resolveAuthValue(AuthDefinition auth, Map<String, String> variables, String authKey, String... fallbackKeys) {
-        // .env / filter variables always win over hardcoded collection values
-        for (String fallbackKey : fallbackKeys) {
-            String value = variables.get(fallbackKey);
-            if (value != null && !value.isBlank()) {
-                return value;
-            }
-        }
-
-        // Fall back to collection auth block value (may be a {{VAR}} reference or a hardcoded literal)
-        String directValue = auth.values().get(authKey);
-        if (directValue != null && !directValue.isBlank()) {
-            return VariableResolver.resolve(directValue, variables);
-        }
-
-        return "";
+                + java.net.URLEncoder.encode(plan.queryValue(), java.nio.charset.StandardCharsets.UTF_8);
     }
 
     private boolean supportsBody(String method) {

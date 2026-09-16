@@ -2,6 +2,7 @@ package com.automation.web;
 
 import com.automation.auth.CredentialLoader;
 import com.automation.auth.VariableResolver;
+import com.automation.auth.secrets.SecretVault;
 import com.automation.cli.CommandLineOptions;
 import com.automation.excel.ExcelReportGenerator;
 import com.automation.filter.*;
@@ -12,6 +13,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.time.Instant;
 import java.time.ZoneId;
@@ -23,6 +25,7 @@ import java.util.regex.Pattern;
 final class ReportService implements AutoCloseable {
     private final WorkspaceFiles files;
     private final Path envPath;
+    private final SecretVault vault;
     private final ObjectMapper mapper = new ObjectMapper();
     private final Map<String, Map<String, Object>> runs = new ConcurrentHashMap<>();
     private final ThreadPoolExecutor worker = new ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS,
@@ -30,12 +33,14 @@ final class ReportService implements AutoCloseable {
     private static final DateTimeFormatter OUTPUT_TIMESTAMP = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")
             .withZone(ZoneId.systemDefault());
     private static final Pattern OUTPUT_FILENAME = Pattern.compile("[A-Za-z0-9][A-Za-z0-9 ._()\\-]*\\.xlsx");
+    private static final Pattern REFERENCE = Pattern.compile("\\{\\{\\s*([A-Za-z0-9_]+)\\s*\\}\\}");
 
     private record Prepared(Path collectionPath, PostmanCollection collection, FilterSpec filter) {}
 
     ReportService(WorkspaceFiles files, Path envPath) throws IOException {
         this.files = files;
         this.envPath = envPath;
+        this.vault = SecretVault.at(files.internalDirectory(".web-state").resolve("secrets.enc"));
         try (var paths = Files.list(files.internalDirectory(".web-state"))) {
             for (Path path : paths.filter(p -> p.getFileName().toString().matches("[a-f0-9-]{36}\\.json"))
                     .filter(p -> !Files.isSymbolicLink(p)).sorted(Comparator.reverseOrder()).limit(200).toList()) {
@@ -120,8 +125,12 @@ final class ReportService implements AutoCloseable {
         CommandLineOptions options = new CommandLineOptions(path, null, envPath, files.resolve("reports/api-test.xlsx"),
                 true, null, false, null, null);
         RuntimeConfig config = CredentialLoader.load(options, null);
+        // Workspace defaults stay separate from the request's own values so auth configured on a
+        // request (or edited in the UI) is never silently overridden by a workspace-level default.
+        Map<String, String> ambient = new LinkedHashMap<>(config.variables());
+        ambient.putAll(vaultSecrets());
         Map<String, String> variables = new LinkedHashMap<>(collection.variables());
-        variables.putAll(config.variables());
+        variables.putAll(ambient);
         variables.putAll(variableOverrides);
         List<RequestHeader> effectiveHeaders = new ArrayList<>(headers);
         String effectiveBody = renderApiBody(bodyMode, body, bodyFields, variables, effectiveHeaders);
@@ -131,8 +140,8 @@ final class ReportService implements AutoCloseable {
                 original.description(), false, original.urlSpec(), original.bodySpec(), original.settings());
         int timeout = boundedInteger(config.variables().get("REQUEST_TIMEOUT_SECONDS"), 30, 1, 300);
         int responseMb = boundedInteger(config.variables().get("MAX_RESPONSE_MB"), 10, 1, 25);
-        ExecutionResult result = new RequestExecutor(config.variables()).executeSingle(request, variables, Map.of(),
-                timeout, responseMb * 1024 * 1024);
+        ExecutionResult result = new RequestExecutor(ambient).executeSingle(request, variables, Map.of(),
+                timeout, responseMb * 1024 * 1024, ambient);
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("name", result.requestName());
         response.put("method", result.method());
@@ -141,6 +150,8 @@ final class ReportService implements AutoCloseable {
         response.put("durationMs", result.durationMillis());
         response.put("success", result.success());
         response.put("error", Objects.toString(result.errorMessage(), ""));
+        response.put("authApplied", new RequestExecutor(ambient)
+                .describeAppliedAuth(request, collection.variables(), variableOverrides, ambient));
         response.put("body", Objects.toString(result.responseBody(), ""));
         response.put("executedAt", result.executedAt().toString());
         return response;
@@ -314,14 +325,20 @@ final class ReportService implements AutoCloseable {
             CommandLineOptions options = new CommandLineOptions(prepared.collectionPath(), null, envPath, output,
                     true, null, false, null, null);
             RuntimeConfig config = CredentialLoader.load(options, prepared.filter());
-            RequestExecutor executor = new RequestExecutor(config.variables());
+            // Vault secrets layer over .env so a secret configured in the UI wins; auth set on the
+            // collection itself still takes precedence over both (see RequestExecutor.resolveAuthValue).
+            Map<String, String> variables = new LinkedHashMap<>(config.variables());
+            variables.putAll(vaultSecrets());
+            RuntimeConfig merged = new RuntimeConfig(config.collectionPath(), config.envPath(), config.outputPath(),
+                    config.includeResponseBody(), variables, config.filterSpec());
+            RequestExecutor executor = new RequestExecutor(variables);
             List<Map<String, Object>> progress = new ArrayList<>();
-            List<ExecutionResult> results = executor.execute(prepared.collection(), config, result -> {
+            List<ExecutionResult> results = executor.execute(prepared.collection(), merged, result -> {
                 progress.add(requestResult(result));
                 update(id, Map.of("completed", progress.size(), "requests", List.copyOf(progress)));
             });
             update(id, Map.of("phase", "Building Excel workbook"));
-            List<Path> outputs = new ExcelReportGenerator().generate(prepared.collection(), results, config, executor);
+            List<Path> outputs = new ExcelReportGenerator().generate(prepared.collection(), results, merged, executor);
             long passed = results.stream().filter(ExecutionResult::success).count();
             long failed = results.size() - passed;
             double average = results.stream().mapToLong(ExecutionResult::durationMillis).average().orElse(0);
@@ -359,6 +376,106 @@ final class ReportService implements AutoCloseable {
                 .replace("{timestamp}", "2026-09-09_12-00-00");
         if (specimen.contains("{") || specimen.contains("}") || !OUTPUT_FILENAME.matcher(specimen).matches()) {
             throw new WebException(400, "Use letters, numbers, spaces, . _ - ( ), and the {collection} or {timestamp} placeholders.");
+        }
+    }
+
+    /** The UI-managed secret vault. Secrets are stored encrypted and never returned to the browser. */
+    SecretVault vault() {
+        return vault;
+    }
+
+    /**
+     * Inventories every ambient credential source for the open request, plus which source wins.
+     * Read-only: nothing here can modify a credential, and no value is returned unmasked.
+     */
+    Map<String, Object> authSources(String collectionName, String requestIndex, String filterPath) throws IOException {
+        AuthDefinition requestAuth = null;
+        Map<String, String> collectionVars = Map.of();
+        if (collectionName != null && !collectionName.isBlank()) {
+            PostmanCollection collection = new PostmanCollectionParser().parse(collectionPath(collectionName));
+            collectionVars = collection.variables();
+            int index = parseIndex(requestIndex);
+            if (index >= 0 && index < collection.requests().size()) {
+                requestAuth = collection.requests().get(index).auth();
+            }
+        }
+        String selected = filterPath == null || filterPath.isBlank() ? matchingFilter(collectionName) : filterPath;
+        return AmbientAuths.inventory(vault, files.root(), envPath, selected, requestAuth, collectionVars,
+                referencedNames(collectionName));
+    }
+
+    /** Every {@code {{NAME}}} the open collection mentions, so the panel can show the matching vars. */
+    private Set<String> referencedNames(String collectionName) {
+        if (collectionName == null || collectionName.isBlank()) {
+            return Set.of();
+        }
+        try {
+            String text = Files.readString(collectionPath(collectionName), StandardCharsets.UTF_8);
+            Set<String> names = new TreeSet<>();
+            var matcher = REFERENCE.matcher(text);
+            while (matcher.find()) {
+                names.add(matcher.group(1));
+            }
+            return names;
+        } catch (Exception e) {
+            return Set.of();
+        }
+    }
+
+    /**
+     * The filter that would run this collection, so the panel can show its declared auth without the
+     * browser having to parse every filter file. The first match in alphabetical order wins.
+     */
+    private String matchingFilter(String collectionName) {
+        if (collectionName == null || collectionName.isBlank()) {
+            return null;
+        }
+        // Strip the "collections/" prefix so "collections/local.json" matches a filter that says
+        // COLLECTION "local". normalizeCollectionName removes .json and lowercases.
+        String bare = collectionName;
+        if (bare.startsWith("collections/")) {
+            bare = bare.substring("collections/".length());
+        }
+        String wanted = normalizeCollectionName(bare);
+        Path directory = files.root().resolve("filters");
+        if (!Files.isDirectory(directory)) {
+            return null;
+        }
+        try (var paths = Files.list(directory)) {
+            for (Path path : paths.filter(p -> p.getFileName().toString().endsWith(".filter")).sorted().toList()) {
+                try {
+                    FilterSpec spec = FilterParser.parse(path, null);
+                    if (spec.collection() != null && normalizeCollectionName(spec.collection()).equals(wanted)) {
+                        return files.root().relativize(path.toAbsolutePath().normalize()).toString();
+                    }
+                } catch (Exception ignored) {
+                    // An unparseable filter is reported when it is run; it cannot describe this collection.
+                }
+            }
+        } catch (IOException ignored) {
+            // Without a readable filters folder the panel simply omits that source.
+        }
+        return null;
+    }
+
+    private static int parseIndex(String value) {
+        if (value == null || value.isBlank()) {
+            return -1;
+        }
+        try {
+            return Math.max(-1, Integer.parseInt(value.trim()));
+        } catch (NumberFormatException e) {
+            return -1;
+        }
+    }
+
+    /** Returns the stored vault secrets, or an empty map when the vault is absent or unreadable. */
+    private Map<String, String> vaultSecrets() {
+        try {
+            return vault.loadAll();
+        } catch (Exception e) {
+            System.err.println("[WARN] Could not read the secret vault: " + e.getMessage());
+            return Map.of();
         }
     }
 

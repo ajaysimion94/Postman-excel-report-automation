@@ -314,6 +314,10 @@ Supported runtime settings include:
 | `OUTPUT_FILE` | Output filename template |
 
 Filter-level `AUTH` and `VARS` values override environment values for that run.
+Request-level auth (set in the web UI Authorization tab or on the request in the
+collection JSON) overrides the filter, credential store, and environment values
+alike. Secrets stored in the web UI's secret vault are written encrypted to
+`.web-state/secrets.enc` and referenced as `{{NAME}}`.
 
 ## Troubleshooting
 
