@@ -147,7 +147,7 @@ final class AmbientAuths {
         }
         Path root = workspace.toAbsolutePath().normalize();
         Path absolute = path.toAbsolutePath().normalize();
-        return absolute.startsWith(root) ? root.relativize(absolute).toString() : absolute.getFileName().toString();
+        return absolute.startsWith(root) ? root.relativize(absolute).toString().replace('\\', '/') : absolute.getFileName().toString();
     }
 
     // ---- Sources -------------------------------------------------------------------------

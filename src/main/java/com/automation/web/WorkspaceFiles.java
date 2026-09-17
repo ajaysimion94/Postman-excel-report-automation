@@ -127,7 +127,7 @@ final class WorkspaceFiles {
         Path trashRoot = internalDirectory(".web-trash");
         Path destination = Files.createDirectory(trashRoot.resolve(UUID.randomUUID().toString())).resolve(source.getFileName());
         Files.move(source, destination);
-        return root.relativize(destination).toString();
+        return root.relativize(destination).toString().replace('\\', '/');
     }
 
     Path internalDirectory(String name) throws IOException {

@@ -446,7 +446,7 @@ final class ReportService implements AutoCloseable {
                 try {
                     FilterSpec spec = FilterParser.parse(path, null);
                     if (spec.collection() != null && normalizeCollectionName(spec.collection()).equals(wanted)) {
-                        return files.root().relativize(path.toAbsolutePath().normalize()).toString();
+                        return files.root().relativize(path.toAbsolutePath().normalize()).toString().replace('\\', '/');
                     }
                 } catch (Exception ignored) {
                     // An unparseable filter is reported when it is run; it cannot describe this collection.
