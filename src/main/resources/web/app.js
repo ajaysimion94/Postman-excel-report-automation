@@ -573,7 +573,7 @@ function prepareApiCollection(collection) {
       ...request,
       headers:normalizeRows(request.headers),
       params:normalizeRows(request.params),
-      auth:{type:request.auth?.type || 'noauth', values:{...(request.auth?.values || {})}},
+      auth:{type:request.auth?.type || 'noauth', values:{...(request.auth?.values || {})}}, authExplicit:false,
       bodyMode:['none','raw','urlencoded','formdata'].includes(request.bodyMode) ? request.bodyMode : request.body ? 'raw' : 'none',
       bodyFields:normalizeRows(request.bodyFields).map(field => ({...field, type:field.type || 'text'}))
     };
@@ -941,6 +941,7 @@ function applySavedCredential(name) {
     else values[role] = `{{${(name + '_' + role).toUpperCase()}}}`;
   });
   request.auth = {type: entry.type, values};
+  request.authExplicit = true;
   state.apiAuthCredentialUsed = name;
   renderResult();
 }
@@ -1031,7 +1032,8 @@ function apiAuthSourcesPanel() {
     return `<div class="api-source-group ${group.id === 'request' ? 'is-request' : ''}"><div class="api-source-head"><span class="api-source-rank" aria-hidden="true">${group.order < 0 ? '·' : group.order + 1}</span><h4>${escapeHtml(group.label)}</h4><span class="api-source-detail">${escapeHtml(group.detail)}</span></div><ul class="api-source-list">${rows}</ul></div>`;
   }).join('');
   const filterNote = data.filterPath ? `Filter <code>${escapeHtml(basename(data.filterPath))}</code>` : 'No filter matches this collection';
-  return `<section class="api-auth-sources"><div class="api-scope-heading"><h4>Where credentials come from</h4><span>Ranked by precedence — the first source providing a value wins.</span></div><p class="api-source-summary">${escapeHtml(effective.summary || '')}</p>${groups}<p class="api-config-note">${filterNote} · env file <code>${escapeHtml(data.envPath || '.env')}</code>. Values are shown masked; nothing here is sent to the browser in clear text.</p>${state.apiAuthSourcesError ? `<p class="api-secret-error" role="alert">${escapeHtml(state.apiAuthSourcesError)}</p>` : ''}</section>`;
+  const cliProfileInfo = data.cliProfile ? ` · CLI profile <code>${escapeHtml(data.cliProfile)}</code>` : '';
+  return `<section class="api-auth-sources"><div class="api-scope-heading"><h4>Where credentials come from</h4><span>Ranked by precedence — the first source providing a value wins.</span></div><p class="api-source-summary">${escapeHtml(effective.summary || '')}</p>${groups}<p class="api-config-note">${filterNote}${cliProfileInfo} · env file <code>${escapeHtml(data.envPath || '.env')}</code>. Values are shown masked; nothing here is sent to the browser in clear text.</p>${state.apiAuthSourcesError ? `<p class="api-secret-error" role="alert">${escapeHtml(state.apiAuthSourcesError)}</p>` : ''}</section>`;
 }
 
 async function saveApiSecret() {
@@ -1110,7 +1112,8 @@ function apiClientView(collection) {
   const response = state.apiResponse;
   const counts = {params:request.params.filter(row => row.enabled && row.key.trim()).length, headers:request.headers.filter(row => row.enabled && row.key.trim()).length};
   const tabs = [['params','Params',counts.params],['auth','Authorization',''],['headers','Headers',counts.headers],['body','Body',request.bodyMode === 'none' ? '' : '•'],['variables','Variables',collection.variables.filter(row => row.enabled && row.key.trim()).length]];
-  const authApplied = response?.authApplied ? `<span class="api-auth-applied ${/workspace default/.test(response.authApplied) ? 'is-default' : ''}" title="Which credential this request actually used">${escapeHtml(response.authApplied)}</span>` : '';
+  const cliProfileNote = response?.cliProfile ? ` (CLI profile: ${escapeHtml(response.cliProfile)})` : '';
+  const authApplied = response?.authApplied ? `<span class="api-auth-applied ${/workspace default/.test(response.authApplied) ? 'is-default' : ''}" title="Which credential this request actually used">${escapeHtml(response.authApplied)}${cliProfileNote}</span>` : '';
   const responseMeta = state.apiSending ? '<span class="api-response-prompt">Waiting for response…</span>' : response ? `<div class="api-response-meta"><span class="api-status ${response.success ? 'ok' : 'error'}">${response.statusCode || 'Error'} ${response.statusCode ? responseStatusText(response.statusCode) : ''}</span><span>${response.durationMs} ms</span><span>${formatResponseSize(response.body)}</span>${authApplied}</div>` : '<span class="api-response-prompt">Send the request to see its response.</span>';
   return `<div class="api-client"><aside class="api-request-list"><div class="api-collection-heading"><span class="eyebrow">COLLECTION</span><h2>${escapeHtml(collection.name)}</h2><span>${collection.requests.length} request${collection.requests.length === 1 ? '' : 's'}</span></div><div class="api-request-scroll">${collection.requests.map((item,index) => `<button class="api-request-item ${index === state.apiRequestIndex ? 'active' : ''}" data-api-request="${index}"><span class="method ${escapeHtml(item.method.toLowerCase())}">${escapeHtml(item.method)}</span><span><strong>${escapeHtml(item.name)}</strong>${item.folder ? `<small>${escapeHtml(item.folder)}</small>` : ''}</span>${item.disabled ? '<em>OFF</em>' : ''}</button>`).join('')}</div><button class="api-source-button" data-edit-collection="${escapeHtml(collection.path)}">{ } View collection JSON</button></aside><section class="api-request-workspace"><div class="api-request-title"><div><span class="eyebrow">${escapeHtml(request.folder || 'REQUEST')}</span><h2>${escapeHtml(request.name)}</h2></div>${request.disabled ? '<span class="api-disabled">Disabled in collection · manual Send is available</span>' : ''}</div><div class="api-url-bar"><select data-api-field="method" aria-label="HTTP method">${['GET','POST','PUT','PATCH','DELETE','HEAD','OPTIONS'].map(method => `<option ${method === request.method.toUpperCase() ? 'selected' : ''}>${method}</option>`).join('')}</select><input data-api-field="url" aria-label="Request URL" value="${escapeHtml(request.url)}" spellcheck="false"><button class="primary-button api-send" data-send-request="true" ${state.apiSending ? 'disabled' : ''}>${state.apiSending ? 'Sending…' : 'Send'}</button></div>${request.description ? `<p class="api-description">${escapeHtml(request.description)}</p>` : ''}<div class="api-request-config"><div class="api-request-tabs" role="tablist" aria-label="Request configuration">${tabs.map(([value,label,count]) => `<button role="tab" aria-selected="${state.apiRequestTab === value}" data-api-request-tab="${value}" class="${state.apiRequestTab === value ? 'active' : ''}">${label}${count !== '' ? `<span>${count}</span>` : ''}</button>`).join('')}</div>${apiRequestPanel(request)}</div><section class="api-response"><div class="api-response-heading"><h3>Response</h3><div class="api-response-tools">${apiResponseToolbar(response)}${responseMeta}</div></div>${apiResponseContent(response)}</section></section></div>`;
 }
@@ -1126,7 +1129,7 @@ async function sendApiRequest() {
       headers:request.headers.filter(header => header.enabled && header.key.trim()).map(({key,value}) => ({key,value})),
       body:request.body, bodyMode:request.bodyMode,
       bodyFields:request.bodyFields.map(field => ({key:field.key,value:field.value,type:field.type || 'text',source:field.source || '',disabled:!field.enabled,contentType:field.contentType || ''})),
-      auth:request.auth, variables:apiVariablePayload()}});
+      auth:{...request.auth, explicit:!!request.authExplicit}, variables:apiVariablePayload()}});
     const datasets = responseDatasets(state.apiResponse.body);
     state.apiResponseView = datasets.length ? 'table' : 'pretty';
     state.apiResponseDataset = 0;
@@ -1359,7 +1362,7 @@ bind('result-content','input',event => {
   if (!request) return;
   if (event.target.dataset.apiField === 'url') { request.url = event.target.value; syncParamsFromUrl(request); }
   else if (event.target.dataset.apiField === 'body') request.body = event.target.value;
-  else if (event.target.dataset.apiAuthField) request.auth.values[event.target.dataset.apiAuthField] = event.target.value;
+  else if (event.target.dataset.apiAuthField) { request.auth.values[event.target.dataset.apiAuthField] = event.target.value; request.authExplicit = true; }
   else if (event.target.dataset.apiRowKind && event.target.dataset.apiRowField) {
     const rows = apiRows(event.target.dataset.apiRowKind, request);
     const index = Number(event.target.dataset.apiRowIndex);
@@ -1394,6 +1397,7 @@ bind('result-content','change',event => {
     const kept = {};
     Object.keys(previous).forEach(key => { if (event.target.value !== 'noauth') kept[key] = previous[key]; });
     currentApiRequest().auth = {type:event.target.value, values:kept};
+    currentApiRequest().authExplicit = true;
     renderResult();
   }
   else if ('apiCredentialType' in event.target.dataset) {
@@ -1404,6 +1408,7 @@ bind('result-content','change',event => {
   }
   else if (event.target.dataset.apiAuthField && currentApiRequest()) {
     currentApiRequest().auth.values[event.target.dataset.apiAuthField] = event.target.value;
+    currentApiRequest().authExplicit = true;
   }
   else if (event.target.dataset.apiRowKind && 'apiRowEnabled' in event.target.dataset) {
     const rows = apiRows(event.target.dataset.apiRowKind);

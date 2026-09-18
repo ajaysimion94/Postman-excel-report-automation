@@ -315,7 +315,13 @@ public final class RequestExecutor {
                         ? new AuthPlan(null, null, name, keyValue.value(), description)
                         : new AuthPlan(name, keyValue.value(), null, null, description);
             }
-            default -> AuthPlan.none();
+            default -> {
+                System.err.println("[WARN] Auth type \"" + type
+                        + "\" is not supported by this runner. The request will be sent without authentication. "
+                        + "Supported types: basic, bearer, apikey.");
+                yield new AuthPlan(null, null, null, null,
+                        "Auth type \"" + type + "\" is not supported. Supported types: basic, bearer, apikey.");
+            }
         };
     }
 

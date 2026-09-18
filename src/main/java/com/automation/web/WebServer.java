@@ -169,7 +169,7 @@ public final class WebServer implements AutoCloseable {
                 Map<String, String> variableOverrides = textMap(body.path("variables"), "Request variables", 200, 100_000);
                 AuthDefinition authOverride = null;
                 JsonNode authNode = body.path("auth");
-                if (!authNode.isMissingNode() && !authNode.isNull()) {
+                if (!authNode.isMissingNode() && !authNode.isNull() && authNode.path("explicit").asBoolean(false)) {
                     if (!authNode.isObject()) throw new WebException(400, "Request auth must be an object.");
                     String authType = authNode.path("type").asText("noauth").toLowerCase(Locale.ROOT);
                     if (!Set.of("noauth", "basic", "bearer", "apikey").contains(authType)) {

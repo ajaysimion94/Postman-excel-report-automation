@@ -152,6 +152,7 @@ final class ReportService implements AutoCloseable {
         response.put("error", Objects.toString(result.errorMessage(), ""));
         response.put("authApplied", new RequestExecutor(ambient)
                 .describeAppliedAuth(request, collection.variables(), variableOverrides, ambient));
+        response.put("cliProfile", activeCliProfileName());
         response.put("body", Objects.toString(result.responseBody(), ""));
         response.put("executedAt", result.executedAt().toString());
         return response;
@@ -476,6 +477,15 @@ final class ReportService implements AutoCloseable {
         } catch (Exception e) {
             System.err.println("[WARN] Could not read the secret vault: " + e.getMessage());
             return Map.of();
+        }
+    }
+
+    /** Returns the name of the active CLI credential store profile, or null when none is set. */
+    private static String activeCliProfileName() {
+        try {
+            return com.automation.auth.config.CredentialStore.system().getActiveUsername();
+        } catch (Exception e) {
+            return null;
         }
     }
 

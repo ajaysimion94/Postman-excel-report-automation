@@ -107,6 +107,7 @@ final class AmbientAuths {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("envPath", relative(workspace, envPath));
         response.put("filterPath", filterPath == null || filterPath.isBlank() ? "" : filterPath);
+        response.put("cliProfile", activeCliProfileName());
 
         List<Map<String, Object>> groups = new ArrayList<>();
         groups.add(declaredGroup(requestAuth, collectionVars));
@@ -430,5 +431,14 @@ final class AmbientAuths {
         Set<String> keys = new java.util.TreeSet<>();
         FIELDS.values().forEach(fields -> fields.forEach(field -> keys.addAll(field.fallbacks())));
         return keys;
+    }
+
+    /** Returns the name of the active CLI credential store profile, or null when none is set. */
+    private static String activeCliProfileName() {
+        try {
+            return CredentialStore.system().getActiveUsername();
+        } catch (Exception e) {
+            return null;
+        }
     }
 }

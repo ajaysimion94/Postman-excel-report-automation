@@ -686,6 +686,10 @@ public final class FilterValidator {
             throw new IllegalArgumentException(
                     "Filter auth requires both apiKey and apiKeyHeader when using API key authentication.");
         }
+        if (isBlank(auth.username()) ^ isBlank(auth.password())) {
+            throw new IllegalArgumentException(
+                    "Filter auth requires both username and password when using basic authentication.");
+        }
     }
 
     private static boolean isBlank(String value) {

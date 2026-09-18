@@ -235,7 +235,7 @@ class WebServerTest {
                 "url", "http://127.0.0.1:%d/inspect".formatted(mock.getAddress().getPort()),
                 "headers", List.of(),
                 "body", "",
-                "auth", Map.of("type", "bearer", "values", Map.of("token", "ui-token")))));
+                "auth", Map.of("type", "bearer", "values", Map.of("token", "ui-token"), "explicit", true))));
 
         // The request's own auth must be the one actually sent, not the .env fallback.
         assertEquals("Bearer ui-token", inspectedAuth.get());
@@ -255,7 +255,7 @@ class WebServerTest {
                 "url", "http://127.0.0.1:%d/inspect".formatted(mock.getAddress().getPort()),
                 "headers", List.of(),
                 "body", "",
-                "auth", Map.of("type", "bearer", "values", Map.of("token", "ui-token")))));
+                "auth", Map.of("type", "bearer", "values", Map.of("token", "ui-token"), "explicit", true))));
 
         assertEquals("Bearer ui-token", inspectedAuth.get());
     }
@@ -271,7 +271,7 @@ class WebServerTest {
                 "url", "http://127.0.0.1:%d/inspect".formatted(mock.getAddress().getPort()),
                 "headers", List.of(),
                 "body", "",
-                "auth", Map.of("type", "bearer", "values", Map.of("token", "{{MY_API_TOKEN}}")))));
+                "auth", Map.of("type", "bearer", "values", Map.of("token", "{{MY_API_TOKEN}}"), "explicit", true))));
 
         assertEquals("Bearer stored-token", inspectedAuth.get(),
                 "A {{VAR}} reference in request auth should resolve from the encrypted vault");
@@ -289,7 +289,7 @@ class WebServerTest {
                 "url", "http://127.0.0.1:%d/inspect".formatted(mock.getAddress().getPort()),
                 "headers", List.of(),
                 "body", "",
-                "auth", Map.of("type", "bearer", "values", Map.of("token", "")))));
+                "auth", Map.of("type", "bearer", "values", Map.of("token", ""), "explicit", true))));
 
         assertEquals("Bearer vault-token", inspectedAuth.get());
         assertTrue(result.path("authApplied").asText().contains("workspace default"),
@@ -340,7 +340,7 @@ class WebServerTest {
                 "headers", List.of(),
                 "body", "",
                 "auth", Map.of("type", "basic", "values", Map.of(
-                        "username", "{{OPS_BASIC}}", "password", "{{OPS_BASIC_PASSWORD}}")))));
+                        "username", "{{OPS_BASIC}}", "password", "{{OPS_BASIC_PASSWORD}}"), "explicit", true))));
 
         String expected = "Basic " + Base64.getEncoder().encodeToString("ops-user:ops-pass".getBytes(StandardCharsets.UTF_8));
         assertEquals(expected, inspectedAuth.get(),
